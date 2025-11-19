@@ -1,3 +1,3 @@
 # slacklak
 
-Applicativo di front-end and back-end di Slack
+Applicativo di front-end and back-end di Slack .
