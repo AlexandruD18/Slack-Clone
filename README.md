@@ -1,8 +1,3 @@
-# slacklak 2025 Facciaml
+# slacklak 2025
 
-Applicativo di front-end and back-end di Slack .
- 
-
-
-
-..
+Applicativo di front-end and back-end di Slack.
