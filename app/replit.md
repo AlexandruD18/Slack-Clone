@@ -1,16 +1,10 @@
-# Slack Clone - Real-time Team Messaging Application
+# Slacklak - Team Collaboration Platform
 
 ## Overview
 
-This is a full-stack Slack clone built with React, Express, and PostgreSQL. The application provides real-time team communication with workspaces, channels, direct messaging, and presence tracking. It uses WebSocket for live updates and follows a modern three-column layout inspired by Slack's interface.
+Slacklak is a Slack-inspired team collaboration platform built with React, Express, and PostgreSQL. The application provides real-time messaging capabilities through workspaces, channels, and direct messages, enabling teams to communicate effectively in a familiar interface.
 
-**Core Features:**
-- Workspace and channel management
-- Real-time messaging with WebSocket
-- Direct messaging between users
-- User presence indicators (online/offline status)
-- Message history persistence
-- Responsive design with mobile support
+The platform features a modern tech stack with TypeScript, Vite for frontend tooling, Drizzle ORM for database management, and shadcn/ui components for a polished user experience. The architecture follows a monorepo structure with shared schemas between client and server, ensuring type safety across the full stack.
 
 ## User Preferences
 
@@ -18,140 +12,119 @@ Preferred communication style: Simple, everyday language.
 
 ## System Architecture
 
-### Full-Stack Monorepo Structure
+### Application Structure
 
-The application uses a monorepo pattern with shared TypeScript types between frontend and backend:
+**Monorepo Layout**: The codebase uses a monorepo structure with three main directories:
+- `client/` - React-based frontend application
+- `server/` - Express.js backend API
+- `shared/` - Shared TypeScript schemas and types used by both client and server
 
-- **`client/`** - React frontend with Vite
-- **`server/`** - Express backend with WebSocket support
-- **`shared/`** - Common TypeScript schemas and types (Drizzle ORM models, Zod validation)
-
-**Rationale:** Co-locating frontend and backend enables type safety across the entire stack and simplifies development by sharing validation schemas and data models.
+**Rationale**: This structure promotes code reuse and type safety. Shared schemas ensure that data structures remain consistent between frontend and backend, reducing bugs and improving developer experience.
 
 ### Frontend Architecture
 
-**Technology Stack:**
-- **React 18** with TypeScript
-- **Vite** for build tooling and development server
-- **Wouter** for client-side routing (lightweight alternative to React Router)
-- **TanStack Query** for server state management and caching
-- **Shadcn/ui + Radix UI** for accessible component primitives
-- **Tailwind CSS** with custom design tokens
+**Framework**: React 18+ with TypeScript, built using Vite for fast development and optimized production builds.
 
-**Key Design Decisions:**
+**UI Component System**: shadcn/ui (New York style variant) with Radix UI primitives and Tailwind CSS for styling. Components are located in `client/src/components/ui/`.
 
-1. **Component-Based Architecture**: UI is built from composable components in `client/src/components/` with a separate `ui/` subdirectory for base design system components.
+**State Management**: 
+- TanStack Query (React Query) for server state management and caching
+- React Context for authentication state (`AuthProvider`)
+- Local React state for UI interactions
 
-2. **Context Providers for Cross-Cutting Concerns**:
-   - `AuthContext` - User authentication state and JWT token management
-   - `WebSocketContext` - WebSocket connection lifecycle and message broadcasting
-   - `ThemeContext` - Light/dark mode theming
+**Routing**: Wouter for lightweight client-side routing with routes defined in `App.tsx`.
 
-3. **Real-time Updates via WebSocket**: The `WebSocketProvider` maintains a persistent connection to `/ws` endpoint, automatically reconnecting on disconnect. Components subscribe to WebSocket events for live message delivery.
+**Design System**: Custom Tailwind configuration with CSS variables for theming, supporting light/dark modes. Design guidelines follow Slack/Linear/Discord patterns for professional messaging UX.
 
-4. **State Management Pattern**: TanStack Query handles server-side data fetching and caching, while React Context manages client-side global state (auth, WebSocket, theme).
+**Key Design Decisions**:
+- Component-based architecture with reusable UI primitives
+- Form validation using react-hook-form with Zod schemas
+- Real-time updates via polling (2-second intervals) with potential WebSocket infrastructure
+- Responsive three-column layout: Workspace sidebar (64px) | Channel sidebar (240px) | Main content area
 
 ### Backend Architecture
 
-**Technology Stack:**
-- **Express.js** with TypeScript
-- **Drizzle ORM** for database queries
-- **Neon Serverless PostgreSQL** (via `@neondatabase/serverless`)
-- **WebSocket (`ws` library)** for real-time communication
-- **JWT** for authentication
-- **bcrypt** for password hashing
+**Framework**: Express.js with TypeScript running on Node.js.
 
-**Key Design Decisions:**
+**API Design**: RESTful API with JWT-based authentication. Routes defined in `server/routes.ts`.
 
-1. **RESTful API + WebSocket Hybrid**:
-   - REST endpoints (`/api/*`) handle CRUD operations (user registration, channel creation, etc.)
-   - WebSocket (`/ws`) handles real-time message broadcasting and presence updates
-   - **Rationale:** REST for request/response patterns, WebSocket for push-based updates eliminates polling overhead
+**Authentication**: 
+- JWT tokens stored in localStorage
+- Bearer token authentication middleware
+- bcrypt for password hashing (10 salt rounds)
+- JWT secret configurable via environment variable
 
-2. **Stateful WebSocket Connections**: Server maintains in-memory maps:
-   - `userConnections` - Maps user IDs to active WebSocket connections
-   - `channelSubscriptions` - Tracks which connections are subscribed to which channels
-   - **Trade-off:** Simple implementation for MVP; would need Redis/pub-sub for multi-instance deployments
+**WebSocket Support**: WebSocket server infrastructure present for real-time messaging (using the `ws` library), though current implementation uses polling.
 
-3. **Authentication Flow**:
-   - JWT tokens generated on login (`/api/auth/login`) and registration (`/api/auth/register`)
-   - Middleware `authenticateJWT` validates Bearer tokens on protected routes
-   - WebSocket connections authenticate via query parameter token (`/ws?token=...`)
+**Data Access Layer**: Storage abstraction through `IStorage` interface with in-memory implementation (`MemStorage` in `server/storage.ts`). This allows for future database implementations without changing business logic.
 
-4. **Database Layer Abstraction**: `server/storage.ts` provides a repository pattern interface over Drizzle ORM, making it easier to swap implementations or add caching later.
+**Key Endpoints**:
+- `/api/auth/login` - User authentication
+- `/api/auth/register` - User registration
+- `/api/workspaces` - Workspace CRUD operations
+- `/api/channels` - Channel management
+- `/api/messages` - Channel messaging
+- `/api/dm` - Direct messaging
+- `/ws` - WebSocket connection endpoint
 
-### Database Schema
+### Data Storage
 
-**Tables:**
-- `users` - User accounts with email, hashed password, name, avatar, and status
-- `workspaces` - Team workspaces with owner relationships
-- `workspace_members` - Junction table for workspace membership with roles
-- `channels` - Chat channels (public/private) within workspaces
-- `channel_members` - Junction table for channel membership
-- `messages` - Channel messages with references to user and channel
-- `direct_messages` - One-to-one messages between users
+**ORM**: Drizzle ORM configured for PostgreSQL with schema defined in `shared/schema.ts`.
 
-**Key Relationships:**
-- Users can belong to multiple workspaces (many-to-many via `workspace_members`)
-- Channels belong to one workspace, users subscribe to channels (many-to-many via `channel_members`)
-- Messages are polymorphic: channel messages vs. direct messages stored in separate tables
+**Database Provider**: Neon Serverless PostgreSQL (via `@neondatabase/serverless`).
 
-**Rationale:** Normalized schema prevents data duplication. Separate tables for channel vs. direct messages simplify queries and allow different indexing strategies.
+**Schema Design**:
+- `users` - User accounts with email, name, password, avatar color, custom status
+- `workspaces` - Team workspaces with owner relationship
+- `workspace_members` - Join table for workspace membership
+- `channels` - Communication channels within workspaces (supports private channels)
+- `messages` - Channel messages with user and timestamp
+- `direct_messages` - One-to-one messaging between users
 
-### WebSocket Protocol
+**Migration Strategy**: Drizzle Kit for schema migrations, outputting to `./migrations` directory.
 
-**Client-to-Server Events:**
-- `subscribe_channel` - Join a channel's message stream
-- `unsubscribe_channel` - Leave a channel's message stream
-- `new_message` - Send a message to a channel
-- `new_dm` - Send a direct message to another user
-- `typing` - Broadcast typing indicator
+**Current Implementation Note**: The application includes a `MemStorage` in-memory implementation for development/testing. Production deployments should connect to the PostgreSQL database via `DATABASE_URL` environment variable.
 
-**Server-to-Client Events:**
-- `new_message` - Broadcast incoming channel message
-- `new_dm` - Deliver incoming direct message
-- `user_online` / `user_offline` - Presence notifications
-- `typing` - Relay typing indicators to channel members
+### External Dependencies
 
-**Broadcast Strategy**: When a message is sent, the server iterates through all WebSocket connections subscribed to that channel and sends the message payload. Direct messages are sent only to the recipient's active connections.
+**Core Runtime Dependencies**:
+- **@neondatabase/serverless** - PostgreSQL database driver for Neon
+- **drizzle-orm** - Type-safe ORM for database operations
+- **express** - Web application framework
+- **bcrypt** - Password hashing library
+- **jsonwebtoken** - JWT token generation and validation
+- **ws** - WebSocket server implementation
 
-### Design System
+**Frontend Libraries**:
+- **@tanstack/react-query** - Server state management and caching
+- **wouter** - Lightweight routing library
+- **react-hook-form** - Form state management
+- **zod** - Schema validation
+- **date-fns** - Date formatting and manipulation
 
-**Theming:** The application uses CSS custom properties (`--background`, `--primary`, etc.) defined in `client/src/index.css` with light/dark mode variants toggled via `.dark` class on root element.
+**UI Component Libraries**:
+- **@radix-ui/* (multiple packages)** - Accessible UI primitives for dialogs, dropdowns, popovers, etc.
+- **tailwindcss** - Utility-first CSS framework
+- **class-variance-authority** - Component variant management
+- **lucide-react** - Icon library
 
-**Spacing & Typography:** Follows Tailwind's utility-first approach with custom spacing units (2, 4, 6, 8, 12) for consistent rhythm. Design guidelines in `design_guidelines.md` specify a three-column layout (240px sidebar, flexible main content, 280px collapsible right panel).
+**Development Tools**:
+- **vite** - Build tool and dev server
+- **typescript** - Type system
+- **drizzle-kit** - Database migration toolkit
+- **tsx** - TypeScript execution for Node.js
+- **esbuild** - JavaScript bundler for server production builds
 
-**Component Library:** Shadcn/ui components (configured via `components.json`) provide accessible, unstyled primitives (dialogs, dropdowns, etc.) that are styled with Tailwind classes.
+**Replit-Specific Integrations**:
+- `@replit/vite-plugin-runtime-error-modal` - Development error overlay
+- `@replit/vite-plugin-cartographer` - Development tooling
+- `@replit/vite-plugin-dev-banner` - Development environment indicator
 
-## External Dependencies
+**Environment Variables Required**:
+- `DATABASE_URL` - PostgreSQL connection string (Neon serverless)
+- `JWT_SECRET` - Secret key for JWT signing (defaults to development key)
+- `NODE_ENV` - Environment mode (development/production)
 
-### Third-Party Services
-
-1. **Neon Serverless PostgreSQL**
-   - Managed PostgreSQL database with WebSocket support
-   - Connection pooling via `@neondatabase/serverless` package
-   - Environment variable: `DATABASE_URL`
-
-2. **Drizzle ORM**
-   - Type-safe database query builder
-   - Schema-first approach with TypeScript models in `shared/schema.ts`
-   - Migration management via `drizzle-kit`
-
-### Authentication & Security
-
-- **JWT (jsonwebtoken)**: Token-based authentication with `JWT_SECRET` environment variable
-- **bcrypt**: Password hashing with configurable salt rounds (default: 10)
-- **CORS & Security**: Express middleware handles request validation; production deployments should configure CORS properly
-
-### UI Component Libraries
-
-- **Radix UI**: Headless, accessible component primitives (dialogs, popovers, dropdowns, etc.)
-- **Lucide React**: Icon library for consistent iconography
-- **date-fns**: Date formatting and manipulation (Italian locale support)
-
-### Development Tools
-
-- **Vite**: Frontend build tool and dev server with HMR
-- **TypeScript**: Type safety across frontend, backend, and shared code
-- **ESBuild**: Backend bundling for production builds
-- **Replit Plugins**: Development banner and cartographer for Replit-specific features
+**Third-Party Services**:
+- Neon PostgreSQL - Serverless PostgreSQL database hosting
+- Google Fonts - Inter font family for typography

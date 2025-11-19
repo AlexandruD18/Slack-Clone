@@ -1,17 +1,9 @@
-import { eq, and, or, desc, sql, like } from "drizzle-orm";
-import { db } from "./db";
 import {
-  users,
-  workspaces,
-  workspaceMembers,
-  channels,
-  channelMembers,
-  messages,
-  directMessages,
   type User,
   type InsertUser,
   type Workspace,
   type InsertWorkspace,
+  type WorkspaceMember,
   type Channel,
   type InsertChannel,
   type Message,
@@ -19,244 +11,240 @@ import {
   type DirectMessage,
   type InsertDirectMessage,
 } from "@shared/schema";
+import { randomUUID } from "crypto";
 
 export interface IStorage {
-  // Users
+  // User operations
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
-  updateUser(id: string, data: Partial<Omit<User, "id" | "createdAt">>): Promise<User | undefined>;
+  updateUser(id: string, updates: Partial<User>): Promise<User | undefined>;
 
-  // Workspaces
-  getWorkspacesByUserId(userId: string): Promise<Workspace[]>;
+  // Workspace operations
   getWorkspace(id: string): Promise<Workspace | undefined>;
-  createWorkspace(workspace: Omit<InsertWorkspace, "ownerId">, ownerId: string): Promise<Workspace>;
+  getWorkspacesByUserId(userId: string): Promise<Workspace[]>;
+  createWorkspace(workspace: InsertWorkspace, ownerId: string): Promise<Workspace>;
+  addWorkspaceMember(workspaceId: string, userId: string): Promise<WorkspaceMember>;
   getWorkspaceMembers(workspaceId: string): Promise<User[]>;
-  addWorkspaceMember(workspaceId: string, userId: string, role?: string): Promise<void>;
 
-  // Channels
-  getChannelsByWorkspaceId(workspaceId: string): Promise<Channel[]>;
+  // Channel operations
   getChannel(id: string): Promise<Channel | undefined>;
-  createChannel(channel: Omit<InsertChannel, "createdById">, createdById: string): Promise<Channel>;
-  addChannelMember(channelId: string, userId: string): Promise<void>;
-  getChannelMembers(channelId: string): Promise<User[]>;
+  getChannelsByWorkspaceId(workspaceId: string): Promise<Channel[]>;
+  createChannel(channel: InsertChannel, createdBy: string): Promise<Channel>;
 
-  // Messages
-  getMessagesByChannelId(channelId: string, limit?: number): Promise<(Message & { user: User })[]>;
-  createMessage(message: Omit<InsertMessage, "userId">, userId: string): Promise<Message>;
+  // Message operations
+  getMessagesByChannelId(channelId: string): Promise<Array<Message & { user: User }>>;
+  createMessage(message: InsertMessage, userId: string): Promise<Message>;
 
-  // Direct Messages
-  getDirectMessages(userId1: string, userId2: string, limit?: number): Promise<(DirectMessage & { sender: User; receiver: User })[]>;
-  createDirectMessage(message: Omit<InsertDirectMessage, "senderId">, senderId: string): Promise<DirectMessage>;
+  // Direct message operations
+  getDirectMessages(userId1: string, userId2: string): Promise<Array<DirectMessage & { sender: User; receiver: User }>>;
+  createDirectMessage(dm: InsertDirectMessage, senderId: string): Promise<DirectMessage>;
 
   // Search
-  searchMessages(workspaceId: string, query: string): Promise<(Message & { user: User; channel: Channel })[]>;
+  searchMessages(workspaceId: string, query: string): Promise<Array<Message & { user: User; channel: Channel }>>;
 }
 
-export class DatabaseStorage implements IStorage {
-  // Users
+export class MemStorage implements IStorage {
+  private users: Map<string, User>;
+  private workspaces: Map<string, Workspace>;
+  private workspaceMembers: Map<string, WorkspaceMember>;
+  private channels: Map<string, Channel>;
+  private messages: Map<string, Message>;
+  private directMessages: Map<string, DirectMessage>;
+
+  constructor() {
+    this.users = new Map();
+    this.workspaces = new Map();
+    this.workspaceMembers = new Map();
+    this.channels = new Map();
+    this.messages = new Map();
+    this.directMessages = new Map();
+  }
+
+  // User operations
   async getUser(id: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.id, id));
-    return user || undefined;
+    return this.users.get(id);
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.email, email));
-    return user || undefined;
+    return Array.from(this.users.values()).find((user) => user.email === email);
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
-    const [user] = await db.insert(users).values(insertUser).returning();
+    const id = randomUUID();
+    const avatarColors = ["#8B5CF6", "#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#EC4899"];
+    const avatarColor = avatarColors[Math.floor(Math.random() * avatarColors.length)];
+    
+    const user: User = {
+      ...insertUser,
+      id,
+      avatarColor,
+      customStatus: null,
+      createdAt: new Date(),
+    };
+    this.users.set(id, user);
     return user;
   }
 
-  async updateUser(id: string, data: Partial<Omit<User, "id" | "createdAt">>): Promise<User | undefined> {
-    const [user] = await db.update(users).set(data).where(eq(users.id, id)).returning();
-    return user || undefined;
+  async updateUser(id: string, updates: Partial<User>): Promise<User | undefined> {
+    const user = this.users.get(id);
+    if (!user) return undefined;
+
+    const updatedUser = { ...user, ...updates };
+    this.users.set(id, updatedUser);
+    return updatedUser;
   }
 
-  // Workspaces
-  async getWorkspacesByUserId(userId: string): Promise<Workspace[]> {
-    const result = await db
-      .select({ workspace: workspaces })
-      .from(workspaceMembers)
-      .innerJoin(workspaces, eq(workspaceMembers.workspaceId, workspaces.id))
-      .where(eq(workspaceMembers.userId, userId));
-    return result.map((r) => r.workspace);
-  }
-
+  // Workspace operations
   async getWorkspace(id: string): Promise<Workspace | undefined> {
-    const [workspace] = await db.select().from(workspaces).where(eq(workspaces.id, id));
-    return workspace || undefined;
+    return this.workspaces.get(id);
   }
 
-  async createWorkspace(workspace: Omit<InsertWorkspace, "ownerId">, ownerId: string): Promise<Workspace> {
-    const [newWorkspace] = await db
-      .insert(workspaces)
-      .values({ ...workspace, ownerId })
-      .returning();
+  async getWorkspacesByUserId(userId: string): Promise<Workspace[]> {
+    const memberWorkspaceIds = Array.from(this.workspaceMembers.values())
+      .filter((member) => member.userId === userId)
+      .map((member) => member.workspaceId);
+
+    return Array.from(this.workspaces.values()).filter((workspace) =>
+      memberWorkspaceIds.includes(workspace.id) || workspace.ownerId === userId
+    );
+  }
+
+  async createWorkspace(insertWorkspace: InsertWorkspace, ownerId: string): Promise<Workspace> {
+    const id = randomUUID();
+    const workspace: Workspace = {
+      ...insertWorkspace,
+      id,
+      ownerId,
+      createdAt: new Date(),
+    };
+    this.workspaces.set(id, workspace);
 
     // Add owner as member
-    await this.addWorkspaceMember(newWorkspace.id, ownerId, "admin");
+    await this.addWorkspaceMember(id, ownerId);
 
-    return newWorkspace;
+    return workspace;
+  }
+
+  async addWorkspaceMember(workspaceId: string, userId: string): Promise<WorkspaceMember> {
+    const id = randomUUID();
+    const member: WorkspaceMember = {
+      id,
+      workspaceId,
+      userId,
+      joinedAt: new Date(),
+    };
+    this.workspaceMembers.set(id, member);
+    return member;
   }
 
   async getWorkspaceMembers(workspaceId: string): Promise<User[]> {
-    const result = await db
-      .select({ user: users })
-      .from(workspaceMembers)
-      .innerJoin(users, eq(workspaceMembers.userId, users.id))
-      .where(eq(workspaceMembers.workspaceId, workspaceId));
-    return result.map((r) => r.user);
-  }
+    const memberUserIds = Array.from(this.workspaceMembers.values())
+      .filter((member) => member.workspaceId === workspaceId)
+      .map((member) => member.userId);
 
-  async addWorkspaceMember(workspaceId: string, userId: string, role: string = "member"): Promise<void> {
-    await db.insert(workspaceMembers).values({ workspaceId, userId, role }).onConflictDoNothing();
-  }
-
-  // Channels
-  async getChannelsByWorkspaceId(workspaceId: string): Promise<Channel[]> {
-    return await db
-      .select()
-      .from(channels)
-      .where(eq(channels.workspaceId, workspaceId))
-      .orderBy(channels.name);
-  }
-
-  async getChannel(id: string): Promise<Channel | undefined> {
-    const [channel] = await db.select().from(channels).where(eq(channels.id, id));
-    return channel || undefined;
-  }
-
-  async createChannel(channel: Omit<InsertChannel, "createdById">, createdById: string): Promise<Channel> {
-    const [newChannel] = await db
-      .insert(channels)
-      .values({ ...channel, createdById })
-      .returning();
-
-    // Add creator as member
-    await this.addChannelMember(newChannel.id, createdById);
-
-    return newChannel;
-  }
-
-  async addChannelMember(channelId: string, userId: string): Promise<void> {
-    await db.insert(channelMembers).values({ channelId, userId }).onConflictDoNothing();
-  }
-
-  async getChannelMembers(channelId: string): Promise<User[]> {
-    const result = await db
-      .select({ user: users })
-      .from(channelMembers)
-      .innerJoin(users, eq(channelMembers.userId, users.id))
-      .where(eq(channelMembers.channelId, channelId));
-    return result.map((r) => r.user);
-  }
-
-  // Messages
-  async getMessagesByChannelId(channelId: string, limit: number = 100): Promise<(Message & { user: User })[]> {
-    const result = await db
-      .select({
-        message: messages,
-        user: users,
-      })
-      .from(messages)
-      .innerJoin(users, eq(messages.userId, users.id))
-      .where(eq(messages.channelId, channelId))
-      .orderBy(desc(messages.createdAt))
-      .limit(limit);
-
-    return result.map((r) => ({ ...r.message, user: r.user })).reverse();
-  }
-
-  async createMessage(message: Omit<InsertMessage, "userId">, userId: string): Promise<Message> {
-    const [newMessage] = await db
-      .insert(messages)
-      .values({ ...message, userId })
-      .returning();
-    return newMessage;
-  }
-
-  // Direct Messages
-  async getDirectMessages(userId1: string, userId2: string, limit: number = 100): Promise<(DirectMessage & { sender: User; receiver: User })[]> {
-    const result = await db
-      .select({
-        dm: directMessages,
-        sender: users,
-        receiver: users,
-      })
-      .from(directMessages)
-      .innerJoin(
-        users,
-        or(
-          and(eq(directMessages.senderId, users.id), eq(users.id, userId1)),
-          and(eq(directMessages.senderId, users.id), eq(users.id, userId2))
-        )!
-      )
-      .where(
-        or(
-          and(eq(directMessages.senderId, userId1), eq(directMessages.receiverId, userId2)),
-          and(eq(directMessages.senderId, userId2), eq(directMessages.receiverId, userId1))
-        )
-      )
-      .orderBy(desc(directMessages.createdAt))
-      .limit(limit);
-
-    // Fetch complete user data separately for sender and receiver
-    const dms = await db
-      .select()
-      .from(directMessages)
-      .where(
-        or(
-          and(eq(directMessages.senderId, userId1), eq(directMessages.receiverId, userId2)),
-          and(eq(directMessages.senderId, userId2), eq(directMessages.receiverId, userId1))
-        )
-      )
-      .orderBy(desc(directMessages.createdAt))
-      .limit(limit);
-
-    const enriched = await Promise.all(
-      dms.map(async (dm) => {
-        const sender = await this.getUser(dm.senderId);
-        const receiver = await this.getUser(dm.receiverId);
-        return { ...dm, sender: sender!, receiver: receiver! };
-      })
+    return Array.from(this.users.values()).filter((user) =>
+      memberUserIds.includes(user.id)
     );
-
-    return enriched.reverse();
   }
 
-  async createDirectMessage(message: Omit<InsertDirectMessage, "senderId">, senderId: string): Promise<DirectMessage> {
-    const [newDM] = await db
-      .insert(directMessages)
-      .values({ ...message, senderId })
-      .returning();
-    return newDM;
+  // Channel operations
+  async getChannel(id: string): Promise<Channel | undefined> {
+    return this.channels.get(id);
+  }
+
+  async getChannelsByWorkspaceId(workspaceId: string): Promise<Channel[]> {
+    return Array.from(this.channels.values()).filter(
+      (channel) => channel.workspaceId === workspaceId
+    );
+  }
+
+  async createChannel(insertChannel: InsertChannel, createdBy: string): Promise<Channel> {
+    const id = randomUUID();
+    const channel: Channel = {
+      ...insertChannel,
+      id,
+      createdBy,
+      createdAt: new Date(),
+    };
+    this.channels.set(id, channel);
+    return channel;
+  }
+
+  // Message operations
+  async getMessagesByChannelId(channelId: string): Promise<Array<Message & { user: User }>> {
+    const messages = Array.from(this.messages.values())
+      .filter((message) => message.channelId === channelId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+    return messages.map((message) => ({
+      ...message,
+      user: this.users.get(message.userId)!,
+    }));
+  }
+
+  async createMessage(insertMessage: InsertMessage, userId: string): Promise<Message> {
+    const id = randomUUID();
+    const message: Message = {
+      ...insertMessage,
+      id,
+      userId,
+      createdAt: new Date(),
+      updatedAt: null,
+    };
+    this.messages.set(id, message);
+    return message;
+  }
+
+  // Direct message operations
+  async getDirectMessages(userId1: string, userId2: string): Promise<Array<DirectMessage & { sender: User; receiver: User }>> {
+    const dms = Array.from(this.directMessages.values())
+      .filter(
+        (dm) =>
+          (dm.senderId === userId1 && dm.receiverId === userId2) ||
+          (dm.senderId === userId2 && dm.receiverId === userId1)
+      )
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+    return dms.map((dm) => ({
+      ...dm,
+      sender: this.users.get(dm.senderId)!,
+      receiver: this.users.get(dm.receiverId)!,
+    }));
+  }
+
+  async createDirectMessage(insertDm: InsertDirectMessage, senderId: string): Promise<DirectMessage> {
+    const id = randomUUID();
+    const dm: DirectMessage = {
+      ...insertDm,
+      id,
+      senderId,
+      createdAt: new Date(),
+    };
+    this.directMessages.set(id, dm);
+    return dm;
   }
 
   // Search
-  async searchMessages(workspaceId: string, query: string): Promise<(Message & { user: User; channel: Channel })[]> {
-    const result = await db
-      .select({
-        message: messages,
-        user: users,
-        channel: channels,
-      })
-      .from(messages)
-      .innerJoin(users, eq(messages.userId, users.id))
-      .innerJoin(channels, eq(messages.channelId, channels.id))
-      .where(
-        and(
-          eq(channels.workspaceId, workspaceId),
-          like(messages.content, `%${query}%`)
-        )
-      )
-      .orderBy(desc(messages.createdAt))
-      .limit(50);
+  async searchMessages(workspaceId: string, query: string): Promise<Array<Message & { user: User; channel: Channel }>> {
+    const workspaceChannels = await this.getChannelsByWorkspaceId(workspaceId);
+    const channelIds = workspaceChannels.map((c) => c.id);
 
-    return result.map((r) => ({ ...r.message, user: r.user, channel: r.channel }));
+    const messages = Array.from(this.messages.values())
+      .filter(
+        (message) =>
+          channelIds.includes(message.channelId) &&
+          message.content.toLowerCase().includes(query.toLowerCase())
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 50);
+
+    return messages.map((message) => ({
+      ...message,
+      user: this.users.get(message.userId)!,
+      channel: this.channels.get(message.channelId)!,
+    }));
   }
 }
 
-export const storage = new DatabaseStorage();
+export const storage = new MemStorage();

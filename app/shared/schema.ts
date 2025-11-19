@@ -1,250 +1,133 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, boolean, integer, uuid, primaryKey } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { pgTable, text, varchar, timestamp, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // Users table
 export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: text("email").notNull().unique(),
-  password: text("password").notNull(),
   name: text("name").notNull(),
-  avatar: text("avatar"),
-  status: text("status").default("online"),
+  password: text("password").notNull(),
+  avatarColor: text("avatar_color").notNull().default("#8B5CF6"),
   customStatus: text("custom_status"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 // Workspaces table
 export const workspaces = pgTable("workspaces", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
-  ownerId: uuid("owner_id").references(() => users.id).notNull(),
-  icon: text("icon"),
+  ownerId: varchar("owner_id").notNull().references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Workspace members junction table
+// Workspace members table (join table)
 export const workspaceMembers = pgTable("workspace_members", {
-  workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }).notNull(),
-  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
-  role: text("role").default("member").notNull(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: varchar("workspace_id").notNull().references(() => workspaces.id),
+  userId: varchar("user_id").notNull().references(() => users.id),
   joinedAt: timestamp("joined_at").defaultNow().notNull(),
-}, (table) => ({
-  pk: primaryKey({ columns: [table.workspaceId, table.userId] }),
-}));
+});
 
 // Channels table
 export const channels = pgTable("channels", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "cascade" }).notNull(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: varchar("workspace_id").notNull().references(() => workspaces.id),
   name: text("name").notNull(),
   description: text("description"),
-  isPrivate: boolean("is_private").default(false).notNull(),
-  createdById: uuid("created_by_id").references(() => users.id).notNull(),
+  isPrivate: boolean("is_private").notNull().default(false),
+  createdBy: varchar("created_by").notNull().references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Channel members junction table
-export const channelMembers = pgTable("channel_members", {
-  channelId: uuid("channel_id").references(() => channels.id, { onDelete: "cascade" }).notNull(),
-  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
-  joinedAt: timestamp("joined_at").defaultNow().notNull(),
-}, (table) => ({
-  pk: primaryKey({ columns: [table.channelId, table.userId] }),
-}));
-
 // Messages table
 export const messages = pgTable("messages", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  channelId: uuid("channel_id").references(() => channels.id, { onDelete: "cascade" }).notNull(),
-  userId: uuid("user_id").references(() => users.id).notNull(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  channelId: varchar("channel_id").notNull().references(() => channels.id),
+  userId: varchar("user_id").notNull().references(() => users.id),
   content: text("content").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at"),
 });
 
 // Direct messages table
 export const directMessages = pgTable("direct_messages", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  senderId: uuid("sender_id").references(() => users.id).notNull(),
-  receiverId: uuid("receiver_id").references(() => users.id).notNull(),
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  senderId: varchar("sender_id").notNull().references(() => users.id),
+  receiverId: varchar("receiver_id").notNull().references(() => users.id),
   content: text("content").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Relations
-export const usersRelations = relations(users, ({ many }) => ({
-  ownedWorkspaces: many(workspaces),
-  workspaceMembers: many(workspaceMembers),
-  channelMembers: many(channelMembers),
-  messages: many(messages),
-  sentDirectMessages: many(directMessages, { relationName: "sender" }),
-  receivedDirectMessages: many(directMessages, { relationName: "receiver" }),
-}));
-
-export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
-  owner: one(users, {
-    fields: [workspaces.ownerId],
-    references: [users.id],
-  }),
-  members: many(workspaceMembers),
-  channels: many(channels),
-}));
-
-export const workspaceMembersRelations = relations(workspaceMembers, ({ one }) => ({
-  workspace: one(workspaces, {
-    fields: [workspaceMembers.workspaceId],
-    references: [workspaces.id],
-  }),
-  user: one(users, {
-    fields: [workspaceMembers.userId],
-    references: [users.id],
-  }),
-}));
-
-export const channelsRelations = relations(channels, ({ one, many }) => ({
-  workspace: one(workspaces, {
-    fields: [channels.workspaceId],
-    references: [workspaces.id],
-  }),
-  createdBy: one(users, {
-    fields: [channels.createdById],
-    references: [users.id],
-  }),
-  members: many(channelMembers),
-  messages: many(messages),
-}));
-
-export const channelMembersRelations = relations(channelMembers, ({ one }) => ({
-  channel: one(channels, {
-    fields: [channelMembers.channelId],
-    references: [channels.id],
-  }),
-  user: one(users, {
-    fields: [channelMembers.userId],
-    references: [users.id],
-  }),
-}));
-
-export const messagesRelations = relations(messages, ({ one }) => ({
-  channel: one(channels, {
-    fields: [messages.channelId],
-    references: [channels.id],
-  }),
-  user: one(users, {
-    fields: [messages.userId],
-    references: [users.id],
-  }),
-}));
-
-export const directMessagesRelations = relations(directMessages, ({ one }) => ({
-  sender: one(users, {
-    fields: [directMessages.senderId],
-    references: [users.id],
-    relationName: "sender",
-  }),
-  receiver: one(users, {
-    fields: [directMessages.receiverId],
-    references: [users.id],
-    relationName: "receiver",
-  }),
-}));
-
-// Insert schemas
-export const insertUserSchema = z.object({
-  email: z.string().email("Invalid email format"),
+// Insert schemas for forms
+export const insertUserSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
+  avatarColor: true,
+  customStatus: true,
+}).extend({
+  email: z.string().email("Invalid email address"),
   password: z.string().min(6, "Password must be at least 6 characters"),
   name: z.string().min(2, "Name must be at least 2 characters"),
-  avatar: z.string().optional(),
-  status: z.string().optional(),
-  customStatus: z.string().optional(),
+});
+
+export const loginSchema = z.object({
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(1, "Password is required"),
 });
 
 export const insertWorkspaceSchema = createInsertSchema(workspaces).omit({
   id: true,
-  createdAt: true,
   ownerId: true,
+  createdAt: true,
 }).extend({
-  name: z.string().min(1, "Workspace name is required"),
+  name: z.string().min(1, "Workspace name is required").max(50, "Workspace name too long"),
 });
 
 export const insertChannelSchema = createInsertSchema(channels).omit({
   id: true,
+  createdBy: true,
   createdAt: true,
-  createdById: true,
 }).extend({
-  name: z.string().min(1, "Channel name is required"),
-  workspaceId: z.string().uuid(),
+  name: z.string().min(1, "Channel name is required").max(50, "Channel name too long"),
+  workspaceId: z.string(),
 });
 
 export const insertMessageSchema = createInsertSchema(messages).omit({
   id: true,
-  createdAt: true,
   userId: true,
+  createdAt: true,
+  updatedAt: true,
 }).extend({
-  content: z.string().min(1, "Message cannot be empty"),
-  channelId: z.string().uuid(),
+  channelId: z.string(),
+  content: z.string().min(1, "Message cannot be empty").max(5000, "Message too long"),
 });
 
 export const insertDirectMessageSchema = createInsertSchema(directMessages).omit({
   id: true,
-  createdAt: true,
   senderId: true,
+  createdAt: true,
 }).extend({
-  content: z.string().min(1, "Message cannot be empty"),
-  receiverId: z.string().uuid(),
+  receiverId: z.string(),
+  content: z.string().min(1, "Message cannot be empty").max(5000, "Message too long"),
 });
 
-// Login schema
-export const loginSchema = z.object({
-  email: z.string().email("Invalid email format"),
-  password: z.string().min(1, "Password is required"),
-});
-
-// TypeScript types
-export type User = typeof users.$inferSelect;
+// Type exports
 export type InsertUser = z.infer<typeof insertUserSchema>;
-export type LoginCredentials = z.infer<typeof loginSchema>;
+export type LoginUser = z.infer<typeof loginSchema>;
+export type User = typeof users.$inferSelect;
 
-export type Workspace = typeof workspaces.$inferSelect;
 export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;
+export type Workspace = typeof workspaces.$inferSelect;
+
+export type InsertChannel = z.infer<typeof insertChannelSchema>;
+export type Channel = typeof channels.$inferSelect;
+
+export type InsertMessage = z.infer<typeof insertMessageSchema>;
+export type Message = typeof messages.$inferSelect;
+
+export type InsertDirectMessage = z.infer<typeof insertDirectMessageSchema>;
+export type DirectMessage = typeof directMessages.$inferSelect;
 
 export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
-
-export type Channel = typeof channels.$inferSelect;
-export type InsertChannel = z.infer<typeof insertChannelSchema>;
-
-export type ChannelMember = typeof channelMembers.$inferSelect;
-
-export type Message = typeof messages.$inferSelect;
-export type InsertMessage = z.infer<typeof insertMessageSchema>;
-
-export type DirectMessage = typeof directMessages.$inferSelect;
-export type InsertDirectMessage = z.infer<typeof insertDirectMessageSchema>;
-
-// Extended types for UI with relations
-export type UserWithStatus = User & {
-  isOnline?: boolean;
-  lastSeen?: Date;
-};
-
-export type ChannelWithDetails = Channel & {
-  memberCount?: number;
-  unreadCount?: number;
-  lastMessage?: Message;
-};
-
-export type MessageWithUser = Message & {
-  user: User;
-};
-
-export type DirectMessageWithUser = DirectMessage & {
-  sender: User;
-  receiver: User;
-};
-
-export type WorkspaceWithDetails = Workspace & {
-  memberCount?: number;
-  owner: User;
-};

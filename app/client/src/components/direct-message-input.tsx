@@ -1,7 +1,6 @@
-import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { insertMessageSchema, type InsertMessage } from "@shared/schema";
+import { insertDirectMessageSchema, type InsertDirectMessage } from "@shared/schema";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Form, FormControl, FormField, FormItem } from "@/components/ui/form";
@@ -10,28 +9,28 @@ import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Send } from "lucide-react";
 
-interface MessageInputProps {
-  channelId: string;
+interface DirectMessageInputProps {
+  receiverId: string;
 }
 
-export function MessageInput({ channelId }: MessageInputProps) {
+export function DirectMessageInput({ receiverId }: DirectMessageInputProps) {
   const { toast } = useToast();
 
-  const form = useForm<InsertMessage>({
-    resolver: zodResolver(insertMessageSchema),
+  const form = useForm<InsertDirectMessage>({
+    resolver: zodResolver(insertDirectMessageSchema),
     defaultValues: {
-      channelId,
+      receiverId,
       content: "",
     },
   });
 
-  const sendMessageMutation = useMutation({
-    mutationFn: async (data: InsertMessage) => {
-      return await apiRequest("POST", "/api/messages", data);
+  const sendDmMutation = useMutation({
+    mutationFn: async (data: InsertDirectMessage) => {
+      return await apiRequest("POST", "/api/dm", data);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/messages", channelId] });
-      form.reset({ channelId, content: "" });
+      queryClient.invalidateQueries({ queryKey: ["/api/dm", receiverId] });
+      form.reset({ receiverId, content: "" });
     },
     onError: (error: any) => {
       toast({
@@ -42,9 +41,9 @@ export function MessageInput({ channelId }: MessageInputProps) {
     },
   });
 
-  const onSubmit = (data: InsertMessage) => {
+  const onSubmit = (data: InsertDirectMessage) => {
     if (!data.content.trim()) return;
-    sendMessageMutation.mutate(data);
+    sendDmMutation.mutate(data);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -68,9 +67,9 @@ export function MessageInput({ channelId }: MessageInputProps) {
                     {...field}
                     placeholder="Type a message..."
                     className="min-h-[60px] max-h-[200px] resize-none"
-                    disabled={sendMessageMutation.isPending}
+                    disabled={sendDmMutation.isPending}
                     onKeyDown={handleKeyDown}
-                    data-testid="input-message"
+                    data-testid="input-dm"
                   />
                 </FormControl>
               </FormItem>
@@ -79,8 +78,8 @@ export function MessageInput({ channelId }: MessageInputProps) {
           <Button
             type="submit"
             size="icon"
-            disabled={sendMessageMutation.isPending || !form.watch("content")?.trim()}
-            data-testid="button-send"
+            disabled={sendDmMutation.isPending || !form.watch("content")?.trim()}
+            data-testid="button-send-dm"
           >
             <Send className="h-4 w-4" />
           </Button>
