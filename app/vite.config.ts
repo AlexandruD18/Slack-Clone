@@ -32,10 +32,6 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 8080, // porta frontend assegnata
-    proxy: {
-      "/api": "http://teamslack.lab.home.lucasacchi.net:5000"
-    },
     fs: {
       strict: true,
       deny: ["**/.*"],
