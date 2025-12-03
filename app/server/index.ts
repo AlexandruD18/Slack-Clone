@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
@@ -73,9 +74,10 @@ app.use((req, res, next) => {
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
-  if (process.env.NODE_ENV === "production") {
+  if (false) { 
     serveStatic(app);
   } else {
+    // Entrerà sempre qui (modalità sviluppo con Vite)
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
   }
@@ -89,7 +91,7 @@ app.use((req, res, next) => {
     {
       port,
       host: "0.0.0.0",
-      reusePort: true,
+      // reusePort: true,  <--- CANCELLA QUESTA RIGA (o commentala con //)
     },
     () => {
       log(`serving on port ${port}`);
