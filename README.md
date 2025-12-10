@@ -7,7 +7,7 @@ Uno Slack‑clone open‑source: backend e frontend per una applicazione di mess
 **Stato:** Pubblicato (in esecuzione)
 
 ---
-
+ 
 ## Descrizione
 
 Slacklak è un progetto didattico/prototipale che implementa le funzionalità di base di una piattaforma di messaggistica in tempo reale (canali, messaggi, presenza, autenticazione), con una separazione chiara tra `front-end` e `back-end`.
