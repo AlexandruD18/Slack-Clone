@@ -4,7 +4,6 @@ Uno Slack‑clone open‑source: backend e frontend per una applicazione di mess
 
 **Versione:** 1.0  
 **Data:** 19 novembre 2025
-**Stato:** Pubblicato
 
 ---
 
