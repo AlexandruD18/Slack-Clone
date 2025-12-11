@@ -1,4 +1,4 @@
-# Slacklak 
+# Slack Clone 
 
 Uno Slack‑clone open‑source: backend e frontend per una applicazione di messaggistica in tempo reale.
 
