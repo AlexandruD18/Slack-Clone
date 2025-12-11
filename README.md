@@ -1,13 +1,13 @@
-# Slack Clone 
+# Slack Clone
 
 Uno Slack‑clone open‑source: backend e frontend per una applicazione di messaggistica in tempo reale.
 
 **Versione:** 1.0  
-**Data:** 19/11/2025
+**Data:** 19 novembre 2025
 **Stato:** Pubblicato
 
 ---
- 
+
 ## Descrizione
 
 Slacklak è un progetto didattico/prototipale che implementa le funzionalità di base di una piattaforma di messaggistica in tempo reale (canali, messaggi, presenza, autenticazione), con una separazione chiara tra `front-end` e `back-end`.
