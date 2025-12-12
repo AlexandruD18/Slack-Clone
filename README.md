@@ -2,7 +2,7 @@
 
 Uno Slack‑clone open‑source: backend e frontend per una applicazione di messaggistica in tempo reale.
 
-**Versione:** 1.0  
+**Versione:** 1.0
 **Data:** 19 novembre 2025
 
 ---
