@@ -1,221 +1,745 @@
-# Documento di Analisi Funzionale
+# Documento di Analisi Funzionale (DAF)
 
-**Titolo progetto:** Slack Backend Clone  
-**Versione:** v1.0  
-**Data:** 19/11/2025  
-**Autore:** Backend Developer
+## Slack-Clone Frontend
 
-## 1. Scopo del documento
+---
 
-Il documento definisce il comportamento funzionale del backend per un clone di Slack. Serve a descrivere API, regole di gestione dati e logica operativa necessarie al funzionamento del front end definito nel PRD.
+## 📋 Intestazione Documento
 
-## 2. Contesto e panoramica del sistema
+| Attributo    | Valore                                    |
+| ------------ | ----------------------------------------- |
+| **Titolo**   | Slack-Clone Frontend - Analisi Funzionale |
+| **Versione** | 1.0                                       |
+| **Data**     | 19 novembre 2025                          |
+| **Autore**   | Team Frontend                             |
+| **Revisori** | Da definire                               |
+| **Stato**    | Bozza                                     |
 
-Il sistema gestisce autenticazione, workspace, canali, messaggi, ricerca e profili utente. Il backend espone API REST e WebSocket per fornire aggiornamenti in tempo reale.  
-Componenti principali: backend, database, servizio WebSocket, API REST.
+---
 
-## 3. Architettura generale
+## 🎯 Scopo e Ambito
 
-- Backend con logica di business.
-- Database per utenti, workspace, canali e messaggi.
-- API REST per operazioni CRUD.
-- WebSocket per aggiornamenti in tempo reale.
-- Moduli interni: autenticazione, workspace, canali, messaggi, profilo, ricerca.
+### Obiettivo del Documento
 
-## 4. Funzionalità principali
+Questo documento **descrive in dettaglio i requisiti funzionali** dell'interfaccia frontend di Slack-Clone. Fornisce:
 
-### F-001
+- ✅ Mappatura completa delle funzionalità UI/UX
+- ✅ Dettagli di ogni schermata e componente
+- ✅ Flussi utente specifici (user flows)
+- ✅ Interazioni e comportamenti
+- ✅ Validazioni e gestione errori
+- ✅ Accessibilità e responsiveness
+- ✅ Tracciabilità verso requisiti backend
 
-**Nome:** Registrazione utente  
-**Descrizione:** Registra un nuovo utente con email e password.  
-**Attori:** Utente  
-**Input:** email, password  
-**Output:** token autenticazione  
-**Flusso:** l’utente invia i dati, il sistema valida e salva nel database, genera un token.  
-**Requisiti collegati:** R1
+### Ambito
 
-### F-002
+**In scope (MVP):**
 
-**Nome:** Login  
-**Descrizione:** Permette all’utente di accedere.  
-**Attori:** Utente  
-**Input:** email, password  
-**Output:** token validato  
-**Flusso:** il sistema verifica credenziali e restituisce un token.  
-**Requisiti collegati:** R1
+- Authentication (signup, login, logout)
+- Workspace creation & switching
+- Channel browsing & creation
+- Message sending & receiving
+- Real-time presence
+- User profile
+- Basic settings
+- Responsive UI (mobile → desktop)
 
-### F-003
+**Out of scope (Phase 2+):**
 
-**Nome:** Creazione workspace  
-**Descrizione:** Permette all’utente di creare un workspace.  
-**Attori:** Utente  
-**Input:** nome workspace  
-**Output:** workspace creato  
-**Flusso:** il sistema registra un nuovo workspace e collega l’utente come proprietario.  
-**Requisiti collegati:** R2
+- Advanced search
+- File uploads
+- Emoji reactions
+- Message threads
+- Dark mode
+- Keyboard shortcuts
+- 2FA
+- Integrations
 
-### F-004
+---
 
-**Nome:** Gestione canali  
-**Descrizione:** Permette la creazione e la visualizzazione dei canali.  
-**Attori:** Utente  
-**Input:** dati canale  
-**Output:** canale creato o elenco canali  
-**Flusso:** il sistema salva il canale o recupera la lista dei canali del workspace.  
-**Requisiti collegati:** R3 R4 R5
+## 📸 Architettura dell'Interfaccia
 
-### F-005
+### Layout Principale (Desktop)
 
-**Nome:** Accesso al canale  
-**Descrizione:** L’utente entra in un canale.  
-**Attori:** Utente  
-**Input:** id canale  
-**Output:** dati canale  
-**Flusso:** il backend verifica se l’utente appartiene al workspace e restituisce i dati.  
-**Requisiti collegati:** R6
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ NAVBAR                                                          │
+│ └─ Logo | Workspace Selector | Search | Settings | Logout       │
+├──────────────────┬──────────────────────────┬───────────────────┤
+│                  │                          │                   │
+│   SIDEBAR        │      MAIN CHAT AREA      │   MEMBER PANEL    │
+│   (Left Panel)   │    (Content Area)        │   (Right Panel)   │
+│                  │                          │   [Phase 2+]      │
+│ - Channels       │ ┌──────────────────────┐ │                   │
+│ - DMs            │ │ Channel Header       │ │ - Members list    │
+│ - Favorites      │ ├──────────────────────┤ │ - Channel info    │
+│ - Online         │ │ Messages History     │ │ - Search in       │
+│ - Compose        │ │ (Scrollable)         │ │   channel         │
+│                  │ ├──────────────────────┤ │                   │
+│                  │ │ Message Input Box    │ │                   │
+│                  │ └──────────────────────┘ │                   │
+└──────────────────┴──────────────────────────┴───────────────────┘
+```
 
-### F-006
+### Layout Mobile (< 640px)
 
-**Nome:** Invio messaggi  
-**Descrizione:** L’utente invia un messaggio in un canale.  
-**Attori:** Utente  
-**Input:** testo messaggio  
-**Output:** messaggio salvato  
-**Flusso:** il sistema salva e invia tramite WebSocket agli utenti nel canale.  
-**Requisiti collegati:** R7 R11 R14
+```
+┌───────────────────────────────────────────┐
+│ NAVBAR                                    │
+│ └─ Menu | Search | Settings               │
+├───────────────────────────────────────────┤
+│                                           │
+│  MAIN CHAT AREA                           │
+│  ┌─────────────────────────────────────┐  │
+│  │ Channel: #general                   │  │
+│  ├─────────────────────────────────────┤  │
+│  │                                     │  │
+│  │ Message History (full width)        │  │
+│  │                                     │  │
+│  ├─────────────────────────────────────┤  │
+│  │ [Type message...] [Send]            │  │
+│  └─────────────────────────────────────┘  │
+│                                           │
+│ ← Drawer (hidden, slide from left)        │
+│   Sidebar content on demand               │
+└───────────────────────────────────────────┘
+```
 
-### F-007
+---
 
-**Nome:** Lettura messaggi  
-**Descrizione:** L’utente visualizza messaggi del canale.  
-**Attori:** Utente  
-**Input:** id canale  
-**Output:** elenco messaggi  
-**Flusso:** il backend recupera i messaggi dal database.  
-**Requisiti collegati:** R8
+## 🔐 Authentication & Session
 
-### F-008
+### Schermata: Sign Up
 
-**Nome:** Gestione profilo  
-**Descrizione:** Permette all’utente di modificare le informazioni del profilo.  
-**Attori:** Utente  
-**Input:** nome, avatar, stato  
-**Output:** profilo aggiornato  
-**Flusso:** il backend salva le modifiche.  
-**Requisiti collegati:** R9
+**URL:** `/auth/signup`
 
-### F-009
+**Componenti:**
 
-**Nome:** Ricerca  
-**Descrizione:** Ricerca messaggi e canali.  
-**Attori:** Utente  
-**Input:** query ricerca  
-**Output:** risultati  
-**Flusso:** il sistema cerca nel database con query indicizzate.  
-**Requisiti collegati:** R10
+```
+┌─────────────────────────────────┐
+│  SLACK CLONE                    │
+│                                 │
+│  Create your account            │
+│                                 │
+│  Full Name                      │
+│  [________________]             │
+│                                 │
+│  Email Address                  │
+│  [________________]             │
+│  ↳ Will verify via email        │
+│                                 │
+│  Password                       │
+│  [________________]             │
+│  ↳ 🔓 Show | Password strength │
+│                                 │
+│  ☑ I agree to Terms of Service │
+│                                 │
+│  [Create Account]               │
+│                                 │
+│  Already have account? Log in   │
+└─────────────────────────────────┘
+```
 
-### F-010
+**Behavior:**
 
-**Nome:** Messaggi diretti  
-**Descrizione:** Invia messaggi privati tra due utenti.  
-**Attori:** Utente  
-**Input:** destinatario, testo  
-**Output:** messaggio diretto salvato  
-**Flusso:** il backend salva e invia via WebSocket.  
-**Requisiti collegati:** R12
+1. User enters email, password, name
+2. Client-side validation:
+   - Email format check
+   - Password ≥ 8 chars, contains uppercase + number
+   - Name ≥ 2 chars
+3. Real-time feedback (green check/red X)
+4. Submit → POST /api/auth/register
+5. Backend validates, hashes password
+6. Sends verification email
+7. Redirect to "Check your email" page
+8. User clicks link → marks email verified
+9. Can now login
 
-### F-011
+**Error States:**
 
-**Nome:** Stato online  
-**Descrizione:** Mostra quali utenti sono online.  
-**Attori:** Utente  
-**Input:** connessione WebSocket  
-**Output:** stati utente  
-**Flusso:** il backend aggiorna lo stato utente con presenza in tempo reale.  
-**Requisiti collegati:** R13 R14
+```
+Email already in use
+↳ "This email is already registered. Log in or use another email."
 
-## 5. Casi d’uso
+Weak password
+↳ "Password must include uppercase, number, and be 8+ characters"
 
-### UC-001
+Invalid email format
+↳ "Please enter a valid email address"
 
-**Nome:** Login utente  
-**Attore:** Utente  
-**Descrizione:** L’utente accede al sistema.  
-**Pre-condizioni:** utente registrato  
-**Scenario:** l’utente invia credenziali, il backend verifica e genera token  
-**Post-condizioni:** utente autenticato  
-**Eccezioni:** credenziali non valide
+Network error
+↳ "Failed to create account. Check connection and try again."
+```
 
-### UC-002
+---
 
-**Nome:** Invio messaggio  
-**Attore:** Utente  
-**Descrizione:** L’utente invia un messaggio.  
-**Pre-condizioni:** utente autenticato  
-**Scenario:** l’utente scrive, il backend salva e notifica gli altri  
-**Post-condizioni:** messaggio registrato  
-**Eccezioni:** errore rete
+### Schermata: Login
 
-### UC-003
+**URL:** `/auth/login`
 
-**Nome:** Creazione canale  
-**Attore:** Utente  
-**Descrizione:** L’utente crea un nuovo canale.  
-**Pre-condizioni:** appartenenza workspace  
-**Scenario:** l’utente compila i dati e il backend crea il canale  
-**Post-condizioni:** canale presente in elenco  
-**Eccezioni:** nome duplicato
+**Componenti:**
 
-## 6. Interfaccia utente
+```
+┌─────────────────────────────────┐
+│  SLACK CLONE                    │
+│                                 │
+│  Welcome back                   │
+│                                 │
+│  Email Address                  │
+│  [________________]             │
+│                                 │
+│  Password                       │
+│  [________________]             │
+│  ↳ 🔓 Show | Forgot password?   │
+│                                 │
+│  ☑ Keep me logged in (30 days)  │
+│                                 │
+│  [Sign In]                      │
+│                                 │
+│  Don't have account? Sign up    │
+└─────────────────────────────────┘
+```
 
-Il backend non ha interfaccia grafica. Espone endpoint REST e WebSocket.  
-Per ogni endpoint verrà definito formato JSON.
+**Behavior:**
 
-## 7. Flusso dei dati
+1. User enters email & password
+2. Click "Sign In"
+3. POST /api/auth/login
+4. Backend validates credentials
+5. Returns JWT token + refresh token
+6. Client stores in HttpOnly cookie
+7. Redirect to workspace selector
+8. Set session valid for 7 days
+9. "Keep me logged in" extends to 30 days
 
-- Input dell’utente tramite API.
-- Validazione e logica nel backend.
-- Accesso al database.
-- Output in JSON.
-- Aggiornamenti via WebSocket.
+**Error States:**
 
-Tipologie dati: JSON, record database.
+```
+Incorrect password (after 3 attempts)
+↳ "Invalid email or password. (2 attempts remaining)"
 
-## 8. Requisiti non funzionali collegati
+Too many failed attempts
+↳ "Too many login attempts. Try again in 15 minutes."
 
-- Tempo risposta API sotto due secondi.
-- Autenticazione tramite token.
-- Compatibilità con browser moderni tramite API standard.
-- Scalabilità orizzontale con gestione WebSocket distribuita.
+Email not verified
+↳ "Please verify your email first. Resend link"
 
-## 9. Vincoli e dipendenze
+Network error
+↳ "Failed to login. Check connection and try again."
+```
 
-- Uso di Node.js per il backend.
-- Necessità di database relazionale o NoSQL.
-- Integrazione con servizio WebSocket.
-- Dipendenza dal front end React.
+---
 
-## 10. Tracciabilità dei requisiti
+## 🏢 Workspace Management
 
-| ID Requisito (PRD) | ID Funzionalità | Stato       | Note |
-| ------------------ | --------------- | ----------- | ---- |
-| R1                 | F-001 F-002     | In sviluppo |      |
-| R2                 | F-003           | In sviluppo |      |
-| R3                 | F-004           | In sviluppo |      |
-| R4                 | F-004           | In sviluppo |      |
-| R5                 | F-004           | In sviluppo |      |
-| R6                 | F-005           | In sviluppo |      |
-| R7                 | F-006           | In sviluppo |      |
-| R8                 | F-007           | In sviluppo |      |
-| R9                 | F-008           | In sviluppo |      |
-| R10                | F-009           | In sviluppo |      |
-| R11                | F-006           | In sviluppo |      |
-| R12                | F-010           | In sviluppo |      |
-| R13                | F-011           | In sviluppo |      |
-| R14                | F-006 F-011     | In sviluppo |      |
+### Schermata: Workspace Selector
 
-## 11. Appendici
+**URL:** `/workspaces`
 
-Glossario  
-Documenti esterni o riferimenti tecnici  
-Strutture dati e modelli da definire nel design tecnico
+**Componenti:**
+
+```
+┌─────────────────────────────────────────────┐
+│  SLACK CLONE                                │
+│  Hi, John! Here are your workspaces        │
+│                                             │
+│  ┌──────────────────┐  ┌──────────────────┐│
+│  │ ACME Corp        │  │ Design Collective││
+│  │ 📍 acme-corp     │  │ 📍 design-co     ││
+│  │ 45 members       │  │ 12 members       ││
+│  │ 8 channels       │  │ 3 channels       ││
+│  │ [Enter] [Leave]  │  │ [Enter] [Leave]  ││
+│  └──────────────────┘  └──────────────────┘│
+│                                             │
+│  [+ Create New Workspace]                  │
+│  [+ Join with Invite Code]                 │
+└─────────────────────────────────────────────┘
+```
+
+**Behavior:**
+
+1. Display all workspaces user is member of
+2. Show workspace: name, slug, member count, channel count
+3. Click workspace → load main chat interface
+4. "Create New Workspace" → dialog form
+5. "Leave Workspace" → confirmation dialog
+
+---
+
+### Schermata: Create Workspace
+
+**Dialog/Modal:**
+
+```
+┌─────────────────────────────────┐
+│  Create Workspace               │
+│                                 │
+│  Workspace Name                 │
+│  [Example Corp____]             │
+│  ↳ URL will be: example-corp    │
+│                                 │
+│  Description (optional)         │
+│  [________________]             │
+│                                 │
+│  Visibility                     │
+│  ○ Public (anyone can join)     │
+│  ○ Private (invite only)        │
+│                                 │
+│  [Create] [Cancel]              │
+└─────────────────────────────────┘
+```
+
+**Behavior:**
+
+1. User enters name, description, visibility
+2. Client generates slug (lowercase, no spaces, hyphens)
+3. Real-time slug preview below input
+4. POST /api/workspaces
+5. Backend creates workspace, sets user as owner
+6. Redirect to workspace main interface
+
+---
+
+## 💬 Main Chat Interface
+
+### Schermata: Channel View (Desktop)
+
+**Left Sidebar (Channels):**
+
+```
+┌──────────────────────────────┐
+│ SLACK CLONE                  │
+│ ACME Corp ▼                  │
+├──────────────────────────────┤
+│ ⭐ Starred                   │
+│   • general                  │
+│   • announcements            │
+│                              │
+│ CHANNELS (8)      ⤺ Collapse │
+│   # general       ⭐         │
+│   # random        🔔         │
+│   # #dev
+│   # design                   │
+│   # sales                    │
+│   # management               │
+│   # social-media             │
+│   # archive                  │
+│                              │
+│ DIRECT MESSAGES (3)          │
+│   @ alice         💬 (2)     │
+│   @ bob                      │
+│   @ carol         💬 (5)     │
+│                              │
+│ [+ New Channel]              │
+│ [+ Direct Message]           │
+└──────────────────────────────┘
+```
+
+**Main Chat Area:**
+
+```
+┌────────────────────────────────────────────────────┐
+│ ← GENERAL        Topic: General discussion    ℹ️   │
+│ (45 members)                                       │
+├────────────────────────────────────────────────────┤
+│                                                    │
+│ Jun 12                                             │
+│ ────────────────────────────────────────────────── │
+│                                                    │
+│ [Avatar] Alice (09:30 AM)                         │
+│          Hey everyone! Welcome to #general 👋     │
+│          Feel free to introduce yourselves        │
+│                                                    │
+│ [Avatar] Bob (09:45 AM)                           │
+│          Thanks Alice! I'm the backend dev 🚀     │
+│          Let's build something great              │
+│          ↳ ❤️ Alice, Charlie (2)                   │
+│                                                    │
+│ [Avatar] Carol typing... ✎                        │
+│                                                    │
+├────────────────────────────────────────────────────┤
+│ [You're all caught up! ✓]                         │
+│                                                    │
+│ [Type a message...          ]  📎 😀 [Send]       │
+│ (Press Ctrl+Enter to send)                        │
+└────────────────────────────────────────────────────┘
+```
+
+**Message Details:**
+
+```
+Per-message interactions (on hover):
+├── ❤️ (React with emoji)
+├── ⋯ (More options)
+│   ├── Edit message
+│   ├── Copy text
+│   ├── Copy link
+│   ├── Reply in thread (Phase 2)
+│   ├── Mark as important
+│   └── Delete (if owner)
+└── Time stamp (clickable → permalink)
+```
+
+---
+
+### Schermata: Direct Message
+
+**Sidebar - DM List:**
+
+```
+DIRECT MESSAGES (3)
+  @ alice Smith      💬 (2)
+    ↳ Last: "Good catch! 👍"
+
+  @ bob Johnson
+    ↳ Last: "See you tomorrow"
+
+  @ carol Davis      💬 (5)
+    ↳ Last: "Can you review PR #123?"
+```
+
+**Main Area (same as channel, but 1-a-1):**
+
+```
+┌────────────────────────────────────────────────────┐
+│ alice Smith                             ✓ Online    │
+│ Last active: just now                              │
+├────────────────────────────────────────────────────┤
+│ [Message history...]                               │
+├────────────────────────────────────────────────────┤
+│ [Type a message...          ]  📎 😀 [Send]       │
+└────────────────────────────────────────────────────┘
+```
+
+---
+
+## 👤 User Profile
+
+### Schermata: Profile Card (Click on User Avatar)
+
+**Popover/Drawer:**
+
+```
+┌─────────────────────────────┐
+│  [Avatar]                   │
+│  Alice Smith                │
+│  @alice                     │
+│                             │
+│  ✅ Online • Active         │
+│  Last active: just now      │
+│                             │
+│  Software Engineer @ ACME   │
+│  San Francisco, CA 🌉      │
+│                             │
+│  ┌───────────────────────┐  │
+│  │ 🇬🇧 English           │  │
+│  │ 🌍 San Francisco      │  │
+│  │ 💼 5 years experience │  │
+│  └───────────────────────┘  │
+│                             │
+│  [Message] [View Profile]   │
+│  [Block]                    │
+└─────────────────────────────┘
+```
+
+### Schermata: Settings (User Preferences)
+
+**URL:** `/settings`
+
+```
+┌────────────────────────────────────┐
+│ ⚙️ Settings                        │
+├────────────────────────────────────┤
+│                                    │
+│ ACCOUNT                            │
+│ ├─ Profile                         │
+│ │  [Avatar] [Upload]               │
+│ │  Full Name: [Alice Smith____]    │
+│ │  Display Name: @alice            │
+│ │  Bio: [Software Engineer__]      │
+│ │  Pronouns: [she/her        ▼]    │
+│ │  Timezone: [America/Los_A ▼]     │
+│ │  [Save Changes]                  │
+│ │                                  │
+│ ├─ Security                        │
+│ │  Email: alice@acme.com           │
+│ │  [Change Email]                  │
+│ │  Password: ••••••••••            │
+│ │  [Reset Password]                │
+│ │  [Enable 2FA] (Phase 2)           │
+│ │                                  │
+│ ├─ Preferences                     │
+│ │  Language: [English         ▼]    │
+│ │  Theme: ◉ Light ○ Dark           │
+│ │  Desktop Notifications: [On]     │
+│ │  Sound: [On] [Test Sound]        │
+│ │  Message Preview: [On]           │
+│ │  Auto-away after: [5 min   ▼]    │
+│ │  [Save]                          │
+│ │                                  │
+│ ├─ Privacy                         │
+│ │  Show online status: [On]        │
+│ │  Show in member directory: [On]  │
+│ │  Allow DMs from anyone: [On]     │
+│ │                                  │
+│ ├─ Data & Accounts                 │
+│ │  [Download my data]              │
+│ │  [Delete account]                │
+│ │                                  │
+│ └─ [Logout]                        │
+│                                    │
+└────────────────────────────────────┘
+```
+
+---
+
+## 🔔 Notifications & Indicators
+
+### Unread Badge System
+
+```
+Sidebar Indicators:
+├── Red badge: # unread (1-9+)
+├── Bold text: Channel has unread
+├── Highlight: DM has unread
+└── Mute indicator (🔇): Channel muted
+
+Message Badges:
+├── @ mention: "Alice mentioned you"
+├── !important: Pin to top
+└── 💬 (n): Replies count (Phase 2)
+```
+
+### Desktop Notification
+
+```
+┌─────────────────────────────────┐
+│ 🔔 Slack Clone                  │
+│                                 │
+│ Alice Smith                     │
+│ @general: Hey team, check this  │
+│                                 │
+│ [Open]                    [×]   │
+└─────────────────────────────────┘
+```
+
+---
+
+## 🔍 Search Interface
+
+### Search Modal (Cmd+K or Click Search)
+
+```
+┌────────────────────────────────────┐
+│  🔍 Search Slack Clone             │
+│  [Search messages, channels, users] │
+│                                    │
+│  RESULTS (30)                      │
+│                                    │
+│  CHANNELS (3)                      │
+│  ├── #general (45 members)         │
+│  ├── #random (8 members)           │
+│  └── #dev (12 members)             │
+│                                    │
+│  MESSAGES (15)                     │
+│  ├── Alice: "Check the API docs"   │
+│  │   #dev • Jun 15, 2:30 PM        │
+│  ├── Bob: "Deploy to prod"         │
+│  │   #deployments • Jun 12, 9 AM   │
+│  └── ...                           │
+│                                    │
+│  PEOPLE (5)                        │
+│  ├── Alice Smith (@alice)          │
+│  │   Software Engineer • Online    │
+│  ├── Bob Johnson (@bob)            │
+│  │   Backend Dev • Away            │
+│  └── ...                           │
+│                                    │
+│  [Advanced Search ↓]               │
+└────────────────────────────────────┘
+```
+
+---
+
+## ✅ Validation & Error Handling
+
+### Message Input Validation
+
+```
+Rules:
+├── Max 4000 characters
+├── Trim whitespace
+├── @mention autocomplete
+├── Link detection + preview
+├── Emoji support
+└── Markdown formatting (basic)
+
+Feedback:
+├── Character counter (blue → red at limit)
+├── "X is typing..." indicator
+├── "Message sending..." spinner
+├── "Failed to send" with retry button
+└── "(edited)" indicator on updates
+```
+
+### Channel Name Validation
+
+```
+Rules:
+├── 1-80 characters
+├── Lowercase + hyphens
+├── No special characters
+├── Unique per workspace
+├── Can't start/end with hyphen
+
+Real-time feedback:
+├── ✓ Green (available)
+├── ✗ Red (taken)
+├── ⚠️ Orange (invalid format)
+```
+
+---
+
+## 🔄 Real-Time Updates via WebSocket
+
+### Events the Frontend Listens For
+
+```javascript
+message:new
+  ↳ New message in subscribed channel
+     { id, channel_id, sender, body, created_at }
+
+message:updated
+  ↳ Message edited
+     { id, body, updated_at }
+
+message:deleted
+  ↳ Message removed
+     { id, channel_id }
+
+presence:changed
+  ↳ User online/offline/idle
+     { user_id, status, last_seen }
+
+typing:started
+  ↳ User is typing
+     { user_id, channel_id, user_name }
+
+typing:stopped
+  ↳ User finished typing
+     { user_id, channel_id }
+
+channel:member:joined
+  ↳ New member joined channel
+     { channel_id, user_id, user_name }
+
+channel:member:left
+  ↳ Member left channel
+     { channel_id, user_id }
+```
+
+---
+
+## 📐 Accessibility Checklist
+
+```
+✓ Keyboard Navigation
+  ├── Tab through all interactive elements
+  ├── Enter/Space to activate buttons
+  ├── Arrow keys for list navigation
+  └── Escape to close modals
+
+✓ Screen Reader Support
+  ├── ARIA labels on buttons
+  ├── Form labels with input
+  ├── Alt text on avatars/images
+  └── Semantic HTML (nav, main, aside)
+
+✓ Color Contrast
+  ├── Text: 4.5:1 (large: 3:1)
+  ├── UI elements: 3:1
+  ├── No color-only information
+  └── Tested with aXe / Lighthouse
+
+✓ Focus Management
+  ├── Visible focus indicator
+  ├── Logical tab order
+  ├── Trap focus in modals
+  └── Return focus after close
+
+✓ Motion
+  ├── prefers-reduced-motion honored
+  ├── No auto-playing video
+  ├── No flashing > 3x/sec
+  └── Animation duration < 500ms
+```
+
+---
+
+## 📱 Mobile-Specific Behavior
+
+```
+Layout:
+├── Single column (full width)
+├── Hamburger menu for sidebar
+├── Bottom sheet for options
+└── Fixed input box at bottom
+
+Touch:
+├── 48px min touch targets
+├── Long-press for context menu
+├── Swipe to dismiss
+├── Swipe to navigate (drawer)
+
+Performance:
+├── Lazy load message history
+├── Virtual scrolling for long lists
+├── Image compression (mobile)
+└── Service worker for offline
+
+Notifications:
+├── Vibration on new message
+├── Badge on app icon
+├── Native push notifications
+```
+
+---
+
+## 🧪 Testing Scenarios
+
+### Critical User Flows to Test
+
+```
+1. Authentication Flow
+   ├── Sign up → verify email → login ✓
+   ├── Login → remember me → auto-login ✓
+   ├── Logout → session cleared ✓
+
+2. Channel Navigation
+   ├── Switch channels (messages update) ✓
+   ├── Scroll to top/bottom ✓
+   ├── Load older messages ✓
+
+3. Messaging
+   ├── Send message → appears immediately ✓
+   ├── Edit message → update visible ✓
+   ├── Delete message → removed ✓
+   ├── Offline → queue → sync on reconnect ✓
+
+4. Presence
+   ├── Come online → show in list ✓
+   ├── Go offline → hide from list ✓
+   ├── Typing indicator → show/clear ✓
+
+5. Notifications
+   ├── Mention → notify + badge ✓
+   ├── DM → notify + badge ✓
+   ├── Sound → play/mute ✓
+```
+
+---
+
+**Documento:** Slack-Clone Frontend - Analisi Funzionale  
+**Versione:** 1.0  
+**Status:** 🟡 **Bozza - In Review**  
+**Ultimo update:** 19 novembre 2025
