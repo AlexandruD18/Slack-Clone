@@ -1,0 +1,18 @@
+name: Funzionalità
+description: Proponi una nuova funzione o un miglioramento
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problema
+    attributes:
+      label: Problema
+      description: Chi ha il problema e in quale situazione.
+    validations:
+      required: true
+  - type: textarea
+    id: criteri
+    attributes:
+      label: Criteri di accettazione
+      placeholder: "- L'utente può ...\n- Se ..., allora ..."
+    validations:
+      required: true
