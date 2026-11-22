@@ -11,30 +11,30 @@ import HomePage from "@/pages/home";
 import NotFound from "@/pages/not-found";
 
 function Router() {
-  return (
-    <Switch>
-      <Route path="/" component={HomePage} />
-      <Route path="/auth" component={AuthPage} />
-      <Route component={NotFound} />
-    </Switch>
-  );
+    return (
+        <Switch>
+            <Route path="/" component={HomePage} />
+            <Route path="/auth" component={AuthPage} />
+            <Route component={NotFound} />
+        </Switch>
+    );
 }
 
 function App() {
-  return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <SocketProvider>
-          <WorkspaceProvider>
-            <TooltipProvider>
-              <Toaster />
-              <Router />
-            </TooltipProvider>
-          </WorkspaceProvider>
-        </SocketProvider>
-      </AuthProvider>
-    </QueryClientProvider>
-  );
+    return (
+        <QueryClientProvider client={queryClient}>
+            <AuthProvider>
+                <SocketProvider>
+                    <WorkspaceProvider>
+                        <TooltipProvider>
+                            <Toaster />
+                            <Router />
+                        </TooltipProvider>
+                    </WorkspaceProvider>
+                </SocketProvider>
+            </AuthProvider>
+        </QueryClientProvider>
+    );
 }
 
 export default App;

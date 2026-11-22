@@ -9,57 +9,57 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { Workspace } from "@shared/schema";
 
 export default function HomePage() {
-  const { user, token, isLoading: authLoading } = useAuth();
-  const [, setLocation] = useLocation();
-  const { currentWorkspace, setCurrentWorkspace } = useWorkspace();
+    const { user, token, isLoading: authLoading } = useAuth();
+    const [, setLocation] = useLocation();
+    const { currentWorkspace, setCurrentWorkspace } = useWorkspace();
 
-  const { data: workspaces, isLoading: workspacesLoading } = useQuery<Workspace[]>({
-    queryKey: ["/api/workspaces"],
-    enabled: !!token,
-  });
+    const { data: workspaces, isLoading: workspacesLoading } = useQuery<Workspace[]>({
+        queryKey: ["/api/workspaces"],
+        enabled: !!token,
+    });
 
-  useEffect(() => {
-    if (!authLoading && !user) {
-      setLocation("/auth");
+    useEffect(() => {
+        if (!authLoading && !user) {
+            setLocation("/auth");
+        }
+    }, [authLoading, user, setLocation]);
+
+    useEffect(() => {
+        if (workspaces && workspaces.length > 0 && !currentWorkspace) {
+            setCurrentWorkspace(workspaces[0]);
+        }
+    }, [workspaces, currentWorkspace, setCurrentWorkspace]);
+
+    if (authLoading) {
+        return (
+            <div className="h-screen flex items-center justify-center bg-background">
+                <div className="flex flex-col items-center gap-4">
+                    <Skeleton className="w-12 h-12 rounded-lg" />
+                    <Skeleton className="w-32 h-4" />
+                </div>
+            </div>
+        );
     }
-  }, [authLoading, user, setLocation]);
 
-  useEffect(() => {
-    if (workspaces && workspaces.length > 0 && !currentWorkspace) {
-      setCurrentWorkspace(workspaces[0]);
+    if (!user) {
+        return null;
     }
-  }, [workspaces, currentWorkspace, setCurrentWorkspace]);
 
-  if (authLoading) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-4">
-          <Skeleton className="w-12 h-12 rounded-lg" />
-          <Skeleton className="w-32 h-4" />
-        </div>
-      </div>
-    );
-  }
+    if (workspacesLoading) {
+        return (
+            <div className="h-screen flex items-center justify-center bg-background">
+                <div className="flex flex-col items-center gap-4">
+                    <Skeleton className="w-12 h-12 rounded-lg" />
+                    <Skeleton className="w-32 h-4" />
+                    <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+                </div>
+            </div>
+        );
+    }
 
-  if (!user) {
-    return null;
-  }
+    if (!currentWorkspace) {
+        return <WorkspaceSelector workspaces={workspaces || []} />;
+    }
 
-  if (workspacesLoading) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-background">
-        <div className="flex flex-col items-center gap-4">
-          <Skeleton className="w-12 h-12 rounded-lg" />
-          <Skeleton className="w-32 h-4" />
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!currentWorkspace) {
-    return <WorkspaceSelector workspaces={workspaces || []} />;
-  }
-
-  return <ChatLayout />;
+    return <ChatLayout />;
 }
