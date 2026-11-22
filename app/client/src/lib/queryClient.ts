@@ -4,7 +4,17 @@ function getToken(): string | null {
     return localStorage.getItem("token");
 }
 
+/** Evento globale: il token non è più valido e l'utente va riportato al login. */
+export const AUTH_EXPIRED_EVENT = "auth:expired";
+
+function notifyIfUnauthorized(res: Response) {
+    if (res.status === 401 && getToken()) {
+        window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+    }
+}
+
 async function throwIfResNotOk(res: Response) {
+    notifyIfUnauthorized(res);
     if (!res.ok) {
         let message = res.statusText;
         try {

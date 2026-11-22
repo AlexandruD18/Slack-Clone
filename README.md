@@ -59,9 +59,9 @@ Slack-Clone/
 ### API REST
 
 - Endpoint RESTful per la gestione completa di:
-  - **Utenti**: Registrazione, profilo, impostazioni
-  - **Canali**: Creazione, modifica, eliminazione
-  - **Messaggi**: Invio, modifica, eliminazione, ricerca
+    - **Utenti**: Registrazione, profilo, impostazioni
+    - **Canali**: Creazione, modifica, eliminazione
+    - **Messaggi**: Invio, modifica, eliminazione, ricerca
 
 ### Comunicazione in tempo reale
 
@@ -285,7 +285,8 @@ DATABASE_URL=postgres://user:password@localhost:5432/slacklak
 REDIS_URL=redis://localhost:6379
 
 # Autenticazione
-JWT_SECRET=your_very_secure_secret_key_here_min_32_chars
+# Almeno 32 caratteri casuali: openssl rand -hex 32
+JWT_SECRET=
 
 # Server
 PORT=4000
@@ -714,11 +715,11 @@ Per dettagli su come utilizzare il codice in progetti commerciali o privati, con
 
 1. Controlla se il problema è già stato segnalato nelle [Issues](../../issues)
 2. Se non esiste, crea una nuova issue con:
-   - Titolo descrittivo
-   - Descrizione dettagliata del problema
-   - Passaggi per riprodurre il bug
-   - Screenshot/video se applicabile
-   - Versione di Node.js e OS
+    - Titolo descrittivo
+    - Descrizione dettagliata del problema
+    - Passaggi per riprodurre il bug
+    - Screenshot/video se applicabile
+    - Versione di Node.js e OS
 
 ### Proporre nuove funzionalità
 

@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useState, useEffect, type ReactNode } from "react";
 import type { PublicUser as User } from "@shared/schema";
+import { AUTH_EXPIRED_EVENT, queryClient } from "./queryClient";
 
 interface AuthContextType {
     user: User | null;
@@ -34,12 +35,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(newUser);
     };
 
-    const logout = () => {
+    const logout = useCallback(() => {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
         setToken(null);
         setUser(null);
-    };
+        queryClient.clear();
+    }, []);
+
+    // Token scaduto o non più valido: esco subito invece di lasciare l'app bloccata.
+    useEffect(() => {
+        window.addEventListener(AUTH_EXPIRED_EVENT, logout);
+        return () => window.removeEventListener(AUTH_EXPIRED_EVENT, logout);
+    }, [logout]);
 
     return (
         <AuthContext.Provider value={{ user, token, login, logout, isLoading }}>

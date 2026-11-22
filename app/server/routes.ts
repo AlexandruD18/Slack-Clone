@@ -11,8 +11,16 @@ import { loginSchema, registerSchema, type Channel } from "@shared/schema";
 
 const JWT_SECRET = config.JWT_SECRET;
 const JWT_OPTIONS: jwt.VerifyOptions = { algorithms: ["HS256"] };
-// Hash di una stringa casuale, usato quando l'email non esiste.
-const DUMMY_HASH = hashSync(randomUUID(), 10);
+const BCRYPT_COST = 10;
+// Hash di una stringa casuale con lo stesso costo: i tempi del login non cambiano.
+const DUMMY_HASH = hashSync(randomUUID(), BCRYPT_COST);
+
+function signToken(user: { id: string; email: string; name: string }) {
+    return jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, {
+        algorithm: "HS256",
+        expiresIn: "7d",
+    });
+}
 
 interface AuthenticatedRequest extends Request {
     user?: { id: string; email: string; name: string };
@@ -36,7 +44,7 @@ function authenticateToken(req: AuthenticatedRequest, res: Response, next: NextF
         req.user = decoded;
         next();
     } catch {
-        return res.status(403).json({ message: "Invalid or expired token" });
+        return res.status(401).json({ message: "Invalid or expired token" });
     }
 }
 
@@ -235,18 +243,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 return res.status(400).json({ message: "Email already registered" });
             }
 
-            const hashedPassword = await hash(data.password, 10);
+            const hashedPassword = await hash(data.password, BCRYPT_COST);
             const user = await storage.createUser({
                 email: data.email,
                 password: hashedPassword,
                 name: data.name,
             });
 
-            const token = jwt.sign(
-                { id: user.id, email: user.email, name: user.name },
-                JWT_SECRET,
-                { expiresIn: "7d" },
-            );
+            const token = signToken(user);
 
             res.json({ token, user });
         } catch (error) {
@@ -270,11 +274,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 return res.status(401).json({ message: "Invalid email or password" });
             }
 
-            const token = jwt.sign(
-                { id: user.id, email: user.email, name: user.name },
-                JWT_SECRET,
-                { expiresIn: "7d" },
-            );
+            const token = signToken(user);
 
             res.json({ token, user: toPublicUser(user) });
         } catch (error) {
