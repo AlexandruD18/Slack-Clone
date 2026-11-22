@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import type { User, DirectMessageWithUsers } from "@shared/schema";
+import type { PublicUser as User, DirectMessageWithUsers } from "@shared/schema";
 
 interface DirectMessageAreaProps {
     user: User;

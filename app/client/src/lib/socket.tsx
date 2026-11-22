@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "./auth";
+import { AUTH_EXPIRED_EVENT } from "./queryClient";
 
 interface SocketContextType {
     socket: WebSocket | null;
@@ -34,8 +35,12 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             setIsConnected(true);
         };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
             setIsConnected(false);
+            // 1008: il server ha rifiutato il token (scaduto o firmato con un altro segreto).
+            if (event.code === 1008) {
+                window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+            }
         };
 
         ws.onmessage = (event) => {

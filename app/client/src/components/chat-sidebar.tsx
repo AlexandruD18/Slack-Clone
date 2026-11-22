@@ -50,7 +50,7 @@ import {
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import type { Channel, User } from "@shared/schema";
+import type { Channel, PublicUser as User } from "@shared/schema";
 
 const createChannelSchema = z.object({
     name: z.string().min(2, "Channel name must be at least 2 characters").max(50),

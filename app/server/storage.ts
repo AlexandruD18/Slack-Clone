@@ -8,6 +8,7 @@ import {
     directMessages,
     userPresence,
     type User,
+    type PublicUser,
     type InsertUser,
     type Workspace,
     type InsertWorkspace,
@@ -25,39 +26,65 @@ import {
     type DirectMessageWithUsers,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, asc } from "drizzle-orm";
+import { eq, and, or, asc, inArray } from "drizzle-orm";
+
+/**
+ * Colonne dell'utente che possono uscire dal server.
+ * L'hash della password non deve mai comparire in una risposta o in un evento.
+ */
+export const publicUserColumns = {
+    id: users.id,
+    email: users.email,
+    name: users.name,
+    avatar: users.avatar,
+    status: users.status,
+    statusMessage: users.statusMessage,
+    createdAt: users.createdAt,
+};
+
+export function toPublicUser(user: User): PublicUser {
+    const { password, ...rest } = user;
+    return rest;
+}
 
 export interface IStorage {
-    // Users
-    getUser(id: string): Promise<User | undefined>;
-    getUserByEmail(email: string): Promise<User | undefined>;
-    createUser(user: InsertUser): Promise<User>;
-    updateUser(id: string, data: Partial<User>): Promise<User | undefined>;
+    // Utenti
+    getUser(id: string): Promise<PublicUser | undefined>;
+    /** Unico metodo che restituisce l'hash della password: serve solo al login. */
+    getUserWithPasswordByEmail(email: string): Promise<User | undefined>;
+    emailExists(email: string): Promise<boolean>;
+    createUser(user: InsertUser): Promise<PublicUser>;
+    updateUser(
+        id: string,
+        data: Partial<Pick<User, "name" | "avatar" | "statusMessage">>,
+    ): Promise<PublicUser | undefined>;
 
-    // Workspaces
+    // Workspace
     getWorkspace(id: string): Promise<Workspace | undefined>;
     getWorkspacesByUser(userId: string): Promise<Workspace[]>;
     createWorkspace(workspace: InsertWorkspace): Promise<Workspace>;
 
-    // Workspace Members
-    getWorkspaceMembers(workspaceId: string): Promise<{ user: User }[]>;
+    // Membri dei workspace
+    getWorkspaceMembers(workspaceId: string): Promise<{ user: PublicUser }[]>;
+    getWorkspaceMemberIds(workspaceId: string): Promise<string[]>;
     addWorkspaceMember(member: InsertWorkspaceMember): Promise<WorkspaceMember>;
     isWorkspaceMember(workspaceId: string, userId: string): Promise<boolean>;
 
-    // Channels
+    // Canali
     getChannel(id: string): Promise<Channel | undefined>;
-    getChannelsByWorkspace(workspaceId: string): Promise<Channel[]>;
+    getChannelsVisibleToUser(workspaceId: string, userId: string): Promise<Channel[]>;
     createChannel(channel: InsertChannel): Promise<Channel>;
 
-    // Channel Members
+    // Membri dei canali
     addChannelMember(member: InsertChannelMember): Promise<ChannelMember>;
     isChannelMember(channelId: string, userId: string): Promise<boolean>;
+    getChannelMemberIds(channelId: string): Promise<string[]>;
 
-    // Messages
+    // Messaggi
     getMessages(channelId: string, limit?: number): Promise<MessageWithSender[]>;
     createMessage(message: InsertMessage): Promise<Message>;
 
-    // Direct Messages
+    // Messaggi diretti
     getDirectMessages(
         userId1: string,
         userId2: string,
@@ -65,37 +92,49 @@ export interface IStorage {
     ): Promise<DirectMessageWithUsers[]>;
     createDirectMessage(message: InsertDirectMessage): Promise<DirectMessage>;
 
-    // Presence
+    // Presenza
     updatePresence(userId: string, status: string): Promise<void>;
     getPresence(userId: string): Promise<{ status: string } | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
-    // Users
-    async getUser(id: string): Promise<User | undefined> {
-        const [user] = await db.select().from(users).where(eq(users.id, id));
-        return user || undefined;
-    }
-
-    async getUserByEmail(email: string): Promise<User | undefined> {
-        const [user] = await db.select().from(users).where(eq(users.email, email));
-        return user || undefined;
-    }
-
-    async createUser(insertUser: InsertUser): Promise<User> {
-        const [user] = await db.insert(users).values(insertUser).returning();
+    // Utenti
+    async getUser(id: string): Promise<PublicUser | undefined> {
+        const [user] = await db.select(publicUserColumns).from(users).where(eq(users.id, id));
         return user;
     }
 
-    async updateUser(id: string, data: Partial<User>): Promise<User | undefined> {
-        const [user] = await db.update(users).set(data).where(eq(users.id, id)).returning();
-        return user || undefined;
+    async getUserWithPasswordByEmail(email: string): Promise<User | undefined> {
+        const [user] = await db.select().from(users).where(eq(users.email, email));
+        return user;
     }
 
-    // Workspaces
+    async emailExists(email: string): Promise<boolean> {
+        const [row] = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
+        return !!row;
+    }
+
+    async createUser(insertUser: InsertUser): Promise<PublicUser> {
+        const [user] = await db.insert(users).values(insertUser).returning(publicUserColumns);
+        return user;
+    }
+
+    async updateUser(
+        id: string,
+        data: Partial<Pick<User, "name" | "avatar" | "statusMessage">>,
+    ): Promise<PublicUser | undefined> {
+        const [user] = await db
+            .update(users)
+            .set(data)
+            .where(eq(users.id, id))
+            .returning(publicUserColumns);
+        return user;
+    }
+
+    // Workspace
     async getWorkspace(id: string): Promise<Workspace | undefined> {
         const [workspace] = await db.select().from(workspaces).where(eq(workspaces.id, id));
-        return workspace || undefined;
+        return workspace;
     }
 
     async getWorkspacesByUser(userId: string): Promise<Workspace[]> {
@@ -112,14 +151,21 @@ export class DatabaseStorage implements IStorage {
         return workspace;
     }
 
-    // Workspace Members
-    async getWorkspaceMembers(workspaceId: string): Promise<{ user: User }[]> {
-        const members = await db
-            .select({ user: users })
+    // Membri dei workspace
+    async getWorkspaceMembers(workspaceId: string): Promise<{ user: PublicUser }[]> {
+        return db
+            .select({ user: publicUserColumns })
             .from(workspaceMembers)
             .innerJoin(users, eq(workspaceMembers.userId, users.id))
             .where(eq(workspaceMembers.workspaceId, workspaceId));
-        return members;
+    }
+
+    async getWorkspaceMemberIds(workspaceId: string): Promise<string[]> {
+        const rows = await db
+            .select({ userId: workspaceMembers.userId })
+            .from(workspaceMembers)
+            .where(eq(workspaceMembers.workspaceId, workspaceId));
+        return rows.map((r) => r.userId);
     }
 
     async addWorkspaceMember(member: InsertWorkspaceMember): Promise<WorkspaceMember> {
@@ -129,7 +175,7 @@ export class DatabaseStorage implements IStorage {
 
     async isWorkspaceMember(workspaceId: string, userId: string): Promise<boolean> {
         const [member] = await db
-            .select()
+            .select({ id: workspaceMembers.id })
             .from(workspaceMembers)
             .where(
                 and(
@@ -140,17 +186,28 @@ export class DatabaseStorage implements IStorage {
         return !!member;
     }
 
-    // Channels
+    // Canali
     async getChannel(id: string): Promise<Channel | undefined> {
         const [channel] = await db.select().from(channels).where(eq(channels.id, id));
-        return channel || undefined;
+        return channel;
     }
 
-    async getChannelsByWorkspace(workspaceId: string): Promise<Channel[]> {
+    /** Canali pubblici del workspace più i privati di cui l'utente è membro. */
+    async getChannelsVisibleToUser(workspaceId: string, userId: string): Promise<Channel[]> {
+        const memberOf = db
+            .select({ channelId: channelMembers.channelId })
+            .from(channelMembers)
+            .where(eq(channelMembers.userId, userId));
+
         return db
             .select()
             .from(channels)
-            .where(eq(channels.workspaceId, workspaceId))
+            .where(
+                and(
+                    eq(channels.workspaceId, workspaceId),
+                    or(eq(channels.isPrivate, false), inArray(channels.id, memberOf)),
+                ),
+            )
             .orderBy(asc(channels.createdAt));
     }
 
@@ -159,7 +216,7 @@ export class DatabaseStorage implements IStorage {
         return channel;
     }
 
-    // Channel Members
+    // Membri dei canali
     async addChannelMember(member: InsertChannelMember): Promise<ChannelMember> {
         const [channelMember] = await db.insert(channelMembers).values(member).returning();
         return channelMember;
@@ -167,30 +224,36 @@ export class DatabaseStorage implements IStorage {
 
     async isChannelMember(channelId: string, userId: string): Promise<boolean> {
         const [member] = await db
-            .select()
+            .select({ id: channelMembers.id })
             .from(channelMembers)
             .where(and(eq(channelMembers.channelId, channelId), eq(channelMembers.userId, userId)));
         return !!member;
     }
 
-    // Messages
+    async getChannelMemberIds(channelId: string): Promise<string[]> {
+        const rows = await db
+            .select({ userId: channelMembers.userId })
+            .from(channelMembers)
+            .where(eq(channelMembers.channelId, channelId));
+        return rows.map((r) => r.userId);
+    }
+
+    // Messaggi
     async getMessages(channelId: string, limit = 100): Promise<MessageWithSender[]> {
-        const result = await db
+        return db
             .select({
                 id: messages.id,
                 channelId: messages.channelId,
                 senderId: messages.senderId,
                 content: messages.content,
                 createdAt: messages.createdAt,
-                sender: users,
+                sender: publicUserColumns,
             })
             .from(messages)
             .innerJoin(users, eq(messages.senderId, users.id))
             .where(eq(messages.channelId, channelId))
             .orderBy(asc(messages.createdAt))
             .limit(limit);
-
-        return result;
     }
 
     async createMessage(insertMessage: InsertMessage): Promise<Message> {
@@ -198,7 +261,7 @@ export class DatabaseStorage implements IStorage {
         return message;
     }
 
-    // Direct Messages
+    // Messaggi diretti
     async getDirectMessages(
         userId1: string,
         userId2: string,
@@ -222,18 +285,12 @@ export class DatabaseStorage implements IStorage {
             .orderBy(asc(directMessages.createdAt))
             .limit(limit);
 
-        // Fetch users
-        const userIds = new Set<string>();
-        result.forEach((dm) => {
-            userIds.add(dm.senderId);
-            userIds.add(dm.receiverId);
-        });
+        if (result.length === 0) return [];
 
         const usersList = await db
-            .select()
+            .select(publicUserColumns)
             .from(users)
-            .where(or(...Array.from(userIds).map((id) => eq(users.id, id))));
-
+            .where(inArray(users.id, [userId1, userId2]));
         const usersMap = new Map(usersList.map((u) => [u.id, u]));
 
         return result.map((dm) => ({
@@ -248,7 +305,7 @@ export class DatabaseStorage implements IStorage {
         return message;
     }
 
-    // Presence
+    // Presenza
     async updatePresence(userId: string, status: string): Promise<void> {
         await db
             .insert(userPresence)
@@ -258,7 +315,6 @@ export class DatabaseStorage implements IStorage {
                 set: { status, lastSeen: new Date() },
             });
 
-        // Also update user status
         await db.update(users).set({ status }).where(eq(users.id, userId));
     }
 
@@ -267,7 +323,7 @@ export class DatabaseStorage implements IStorage {
             .select({ status: userPresence.status })
             .from(userPresence)
             .where(eq(userPresence.userId, userId));
-        return presence || undefined;
+        return presence;
     }
 }
 
