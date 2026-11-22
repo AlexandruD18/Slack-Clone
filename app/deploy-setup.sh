@@ -1,23 +1,14 @@
-#!/bin/bash
-# Deployment setup script for Slacklak application
-# Run this on the remote server after uploading the files
+#!/usr/bin/env bash
+# Prepara l'applicazione su un server. Richiede un file .env (vedi .env.example).
+set -euo pipefail
 
-echo "🚀 Starting Slacklak deployment setup..."
+echo "1. Installo le dipendenze"
+npm ci
 
-# Colors for output
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-echo -e "${BLUE}1. Installing dependencies...${NC}"
-npm install
-
-echo -e "${BLUE}2. Building the application...${NC}"
+echo "2. Compilo client e server"
 npm run build
 
-echo -e "${BLUE}3. Running database migrations...${NC}"
+echo "3. Aggiorno lo schema del database"
 npm run db:push
 
-echo -e "${GREEN}✅ Deployment setup completed!${NC}"
-echo -e "${GREEN}To start the application, run: npm start${NC}"
-echo -e "${GREEN}The app will be available on port 5000${NC}"
+echo "Fatto. Avvia con: npm start"
