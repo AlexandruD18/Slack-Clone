@@ -1,13 +1,18 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { storage } from "./storage";
-import { hash, compare } from "bcrypt";
+import { storage, toPublicUser } from "./storage";
+import { config } from "./config";
+import { hash, hashSync, compare } from "bcrypt";
+import { randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
-import { loginSchema, registerSchema } from "@shared/schema";
+import { loginSchema, registerSchema, type Channel } from "@shared/schema";
 
-const JWT_SECRET = process.env.SESSION_SECRET || "slack-clone-secret-key";
+const JWT_SECRET = config.JWT_SECRET;
+const JWT_OPTIONS: jwt.VerifyOptions = { algorithms: ["HS256"] };
+// Hash di una stringa casuale, usato quando l'email non esiste.
+const DUMMY_HASH = hashSync(randomUUID(), 10);
 
 interface AuthenticatedRequest extends Request {
     user?: { id: string; email: string; name: string };
@@ -23,7 +28,7 @@ function authenticateToken(req: AuthenticatedRequest, res: Response, next: NextF
     }
 
     try {
-        const decoded = jwt.verify(token, JWT_SECRET) as {
+        const decoded = jwt.verify(token, JWT_SECRET, JWT_OPTIONS) as {
             id: string;
             email: string;
             name: string;
@@ -52,54 +57,52 @@ function broadcastToUser(userId: string, type: string, payload: any) {
     }
 }
 
+function sendToUsers(userIds: string[], type: string, payload: unknown, excludeUserId?: string) {
+    const message = JSON.stringify({ type, payload });
+    for (const id of userIds) {
+        if (id === excludeUserId) continue;
+        wsConnections.get(id)?.forEach((ws) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(message);
+            }
+        });
+    }
+}
+
 async function broadcastToWorkspaceMembers(
     workspaceId: string,
     type: string,
-    payload: any,
+    payload: unknown,
     excludeUserId?: string,
 ) {
-    const members = await storage.getWorkspaceMembers(workspaceId);
-    const message = JSON.stringify({ type, payload });
-
-    members.forEach(({ user }) => {
-        if (user.id !== excludeUserId) {
-            const connections = wsConnections.get(user.id);
-            if (connections) {
-                connections.forEach((ws) => {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(message);
-                    }
-                });
-            }
-        }
-    });
+    sendToUsers(await storage.getWorkspaceMemberIds(workspaceId), type, payload, excludeUserId);
 }
 
-async function broadcastToChannelMembers(
-    channelId: string,
+/** Un canale privato arriva solo ai suoi membri, uno pubblico a tutto il workspace. */
+async function broadcastToChannel(
+    channel: Channel,
     type: string,
-    payload: any,
+    payload: unknown,
     excludeUserId?: string,
 ) {
-    // Get channel to find workspace, then get workspace members
+    const recipients = channel.isPrivate
+        ? await storage.getChannelMemberIds(channel.id)
+        : await storage.getWorkspaceMemberIds(channel.workspaceId);
+    sendToUsers(recipients, type, payload, excludeUserId);
+}
+
+/**
+ * Restituisce il canale solo se l'utente può vederlo: membro del workspace e,
+ * per i canali privati, anche membro del canale. Altrimenti undefined, così
+ * le route rispondono 404 senza rivelare che il canale esiste.
+ */
+async function getAccessibleChannel(channelId: unknown, userId: string) {
+    if (typeof channelId !== "string") return undefined;
     const channel = await storage.getChannel(channelId);
-    if (!channel) return;
-
-    const members = await storage.getWorkspaceMembers(channel.workspaceId);
-    const message = JSON.stringify({ type, payload });
-
-    members.forEach(({ user }) => {
-        if (user.id !== excludeUserId) {
-            const connections = wsConnections.get(user.id);
-            if (connections) {
-                connections.forEach((ws) => {
-                    if (ws.readyState === WebSocket.OPEN) {
-                        ws.send(message);
-                    }
-                });
-            }
-        }
-    });
+    if (!channel) return undefined;
+    if (!(await storage.isWorkspaceMember(channel.workspaceId, userId))) return undefined;
+    if (channel.isPrivate && !(await storage.isChannelMember(channel.id, userId))) return undefined;
+    return channel;
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -117,7 +120,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
         let userId: string;
         try {
-            const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
+            const decoded = jwt.verify(token, JWT_SECRET, JWT_OPTIONS) as { id: string };
             userId = decoded.id;
         } catch {
             ws.close(1008, "Invalid token");
@@ -159,53 +162,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
                 switch (type) {
                     case "typing:start":
-                        if (payload.channelId) {
-                            // Verify user has access to this channel's workspace
-                            const channel = await storage.getChannel(payload.channelId);
-                            if (channel) {
-                                const isMember = await storage.isWorkspaceMember(
-                                    channel.workspaceId,
-                                    userId,
-                                );
-                                if (isMember) {
-                                    await broadcastToChannelMembers(
-                                        payload.channelId,
-                                        "typing:start",
-                                        {
-                                            channelId: payload.channelId,
-                                            userId,
-                                            userName: user?.name,
-                                        },
-                                        userId,
-                                    );
-                                }
-                            }
+                    case "typing:stop": {
+                        const channel = await getAccessibleChannel(payload?.channelId, userId);
+                        if (channel) {
+                            await broadcastToChannel(
+                                channel,
+                                type,
+                                { channelId: channel.id, userId, userName: user?.name },
+                                userId,
+                            );
                         }
                         break;
-
-                    case "typing:stop":
-                        if (payload.channelId) {
-                            const channel = await storage.getChannel(payload.channelId);
-                            if (channel) {
-                                const isMember = await storage.isWorkspaceMember(
-                                    channel.workspaceId,
-                                    userId,
-                                );
-                                if (isMember) {
-                                    await broadcastToChannelMembers(
-                                        payload.channelId,
-                                        "typing:stop",
-                                        {
-                                            channelId: payload.channelId,
-                                            userId,
-                                            userName: user?.name,
-                                        },
-                                        userId,
-                                    );
-                                }
-                            }
-                        }
-                        break;
+                    }
 
                     case "dm:typing:start":
                         broadcastToUser(payload.receiverId, "dm:typing:start", {
@@ -263,8 +231,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         try {
             const data = registerSchema.parse(req.body);
 
-            const existingUser = await storage.getUserByEmail(data.email);
-            if (existingUser) {
+            if (await storage.emailExists(data.email)) {
                 return res.status(400).json({ message: "Email already registered" });
             }
 
@@ -281,8 +248,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 { expiresIn: "7d" },
             );
 
-            const { password, ...userWithoutPassword } = user;
-            res.json({ token, user: userWithoutPassword });
+            res.json({ token, user });
         } catch (error) {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: error.errors[0].message });
@@ -296,13 +262,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         try {
             const data = loginSchema.parse(req.body);
 
-            const user = await storage.getUserByEmail(data.email);
-            if (!user) {
-                return res.status(401).json({ message: "Invalid email or password" });
-            }
-
-            const validPassword = await compare(data.password, user.password);
-            if (!validPassword) {
+            const user = await storage.getUserWithPasswordByEmail(data.email);
+            // Confronto anche se l'utente non esiste, così i tempi di risposta
+            // non rivelano quali email sono registrate.
+            const validPassword = await compare(data.password, user?.password ?? DUMMY_HASH);
+            if (!user || !validPassword) {
                 return res.status(401).json({ message: "Invalid email or password" });
             }
 
@@ -312,8 +276,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 { expiresIn: "7d" },
             );
 
-            const { password, ...userWithoutPassword } = user;
-            res.json({ token, user: userWithoutPassword });
+            res.json({ token, user: toPublicUser(user) });
         } catch (error) {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: error.errors[0].message });
@@ -329,8 +292,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             if (!user) {
                 return res.status(404).json({ message: "User not found" });
             }
-            const { password, ...userWithoutPassword } = user;
-            res.json(userWithoutPassword);
+            res.json(user);
         } catch (error) {
             console.error("Get user error:", error);
             res.status(500).json({ message: "Failed to get user" });
@@ -446,7 +408,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                     return res.status(403).json({ message: "Not a member of this workspace" });
                 }
 
-                const channels = await storage.getChannelsByWorkspace(req.params.workspaceId);
+                const channels = await storage.getChannelsVisibleToUser(
+                    req.params.workspaceId,
+                    req.user!.id,
+                );
                 res.json(channels);
             } catch (error) {
                 console.error("Get channels error:", error);
@@ -504,15 +469,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         authenticateToken,
         async (req: AuthenticatedRequest, res) => {
             try {
-                const channel = await storage.getChannel(req.params.channelId);
+                const channel = await getAccessibleChannel(req.params.channelId, req.user!.id);
                 if (!channel) {
                     return res.status(404).json({ message: "Channel not found" });
-                }
-
-                // Check workspace membership
-                const isMember = await storage.isWorkspaceMember(channel.workspaceId, req.user!.id);
-                if (!isMember) {
-                    return res.status(403).json({ message: "Not a member of this workspace" });
                 }
 
                 const messages = await storage.getMessages(req.params.channelId);
@@ -529,15 +488,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         authenticateToken,
         async (req: AuthenticatedRequest, res) => {
             try {
-                const channel = await storage.getChannel(req.params.channelId);
+                const channel = await getAccessibleChannel(req.params.channelId, req.user!.id);
                 if (!channel) {
                     return res.status(404).json({ message: "Channel not found" });
-                }
-
-                // Check workspace membership
-                const isMember = await storage.isWorkspaceMember(channel.workspaceId, req.user!.id);
-                if (!isMember) {
-                    return res.status(403).json({ message: "Not a member of this workspace" });
                 }
 
                 const { content } = req.body;
@@ -553,9 +506,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
                 const user = await storage.getUser(req.user!.id);
 
-                // Broadcast to workspace members only
-                await broadcastToChannelMembers(
-                    req.params.channelId,
+                await broadcastToChannel(
+                    channel,
                     "message:new",
                     {
                         ...message,
@@ -629,7 +581,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         try {
             const { name, avatar, statusMessage } = req.body;
 
-            const updateData: any = {};
+            const updateData: Parameters<typeof storage.updateUser>[1] = {};
             if (name) updateData.name = name;
             if (avatar !== undefined) updateData.avatar = avatar;
             if (statusMessage !== undefined) updateData.statusMessage = statusMessage;
@@ -639,8 +591,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 return res.status(404).json({ message: "User not found" });
             }
 
-            const { password, ...userWithoutPassword } = user;
-            res.json(userWithoutPassword);
+            res.json(user);
         } catch (error) {
             console.error("Update user error:", error);
             res.status(500).json({ message: "Failed to update profile" });

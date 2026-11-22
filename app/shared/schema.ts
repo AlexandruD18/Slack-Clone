@@ -201,6 +201,8 @@ export const registerSchema = z.object({
 
 // Types
 export type User = typeof users.$inferSelect;
+/** Utente senza hash della password: l'unica forma che lascia il server. */
+export type PublicUser = Omit<User, "password">;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type Workspace = typeof workspaces.$inferSelect;
 export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;
@@ -219,11 +221,5 @@ export type LoginInput = z.infer<typeof loginSchema>;
 export type RegisterInput = z.infer<typeof registerSchema>;
 
 // Extended types with relations
-export type MessageWithSender = Message & { sender: User };
-export type DirectMessageWithUsers = DirectMessage & { sender: User; receiver: User };
-export type ChannelWithMembers = Channel & { members: (ChannelMember & { user: User })[] };
-export type WorkspaceWithDetails = Workspace & {
-    owner: User;
-    members: (WorkspaceMember & { user: User })[];
-    channels: Channel[];
-};
+export type MessageWithSender = Message & { sender: PublicUser };
+export type DirectMessageWithUsers = DirectMessage & { sender: PublicUser; receiver: PublicUser };

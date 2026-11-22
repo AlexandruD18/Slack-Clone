@@ -7,7 +7,7 @@ import { ChatArea } from "@/components/chat-area";
 import { DirectMessageArea } from "@/components/direct-message-area";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { Channel, User } from "@shared/schema";
+import type { Channel, PublicUser as User } from "@shared/schema";
 
 export function ChatLayout() {
     const [sidebarOpen, setSidebarOpen] = useState(true);
