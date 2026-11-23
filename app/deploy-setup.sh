@@ -8,7 +8,7 @@ npm ci
 echo "2. Compilo client e server"
 npm run build
 
-echo "3. Aggiorno lo schema del database"
-npm run db:push
+echo "3. Applico le migrazioni del database"
+npm run db:migrate
 
 echo "Fatto. Avvia con: npm start"

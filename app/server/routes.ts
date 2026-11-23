@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { storage, toPublicUser } from "./storage";
+import { storage, toPublicUser, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "./storage";
 import { config } from "./config";
 import { hash, hashSync, compare } from "bcrypt";
 import { randomUUID } from "crypto";
@@ -112,6 +112,17 @@ async function getAccessibleChannel(channelId: unknown, userId: string) {
     if (channel.isPrivate && !(await storage.isChannelMember(channel.id, userId))) return undefined;
     return channel;
 }
+
+/** Errore Postgres 23505: violazione di un vincolo di unicità. */
+function isUniqueViolation(error: unknown): boolean {
+    return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+}
+
+/** Parametri di paginazione: `?limit=50&before=<id messaggio>`. */
+const pageQuerySchema = z.object({
+    limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
+    before: z.string().uuid().optional(),
+});
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
     // WebSocket server
@@ -457,6 +468,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
                 res.status(201).json(channel);
             } catch (error) {
+                if (isUniqueViolation(error)) {
+                    return res
+                        .status(409)
+                        .json({ message: "A channel with this name already exists" });
+                }
                 console.error("Create channel error:", error);
                 res.status(500).json({ message: "Failed to create channel" });
             }
@@ -474,7 +490,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                     return res.status(404).json({ message: "Channel not found" });
                 }
 
-                const messages = await storage.getMessages(req.params.channelId);
+                const query = pageQuerySchema.safeParse(req.query);
+                if (!query.success) {
+                    return res.status(400).json({ message: "Invalid pagination parameters" });
+                }
+                const before = query.data.before
+                    ? await storage.getMessageCursor(channel.id, query.data.before)
+                    : undefined;
+                if (query.data.before && !before) {
+                    return res.status(400).json({ message: "Unknown message cursor" });
+                }
+
+                const messages = await storage.getMessages(channel.id, {
+                    before,
+                    limit: query.data.limit,
+                });
                 res.json(messages);
             } catch (error) {
                 console.error("Get messages error:", error);
@@ -534,7 +564,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 return res.status(404).json({ message: "User not found" });
             }
 
-            const messages = await storage.getDirectMessages(req.user!.id, req.params.userId);
+            const query = pageQuerySchema.safeParse(req.query);
+            if (!query.success) {
+                return res.status(400).json({ message: "Invalid pagination parameters" });
+            }
+            const before = query.data.before
+                ? await storage.getDirectMessageCursor(
+                      req.user!.id,
+                      req.params.userId,
+                      query.data.before,
+                  )
+                : undefined;
+            if (query.data.before && !before) {
+                return res.status(400).json({ message: "Unknown message cursor" });
+            }
+
+            const messages = await storage.getDirectMessages(req.user!.id, req.params.userId, {
+                before,
+                limit: query.data.limit,
+            });
             res.json(messages);
         } catch (error) {
             console.error("Get DMs error:", error);

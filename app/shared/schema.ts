@@ -1,5 +1,13 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, timestamp, boolean } from "drizzle-orm/pg-core";
+import {
+    pgTable,
+    text,
+    varchar,
+    timestamp,
+    boolean,
+    index,
+    uniqueIndex,
+} from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -12,7 +20,9 @@ export const users = pgTable("users", {
     password: text("password").notNull(),
     name: text("name").notNull(),
     avatar: text("avatar"),
-    status: text("status").default("online"),
+    // Unica fonte della presenza: "online" o "offline", aggiornata dal WebSocket.
+    status: text("status").default("offline").notNull(),
+    lastSeenAt: timestamp("last_seen_at"),
     statusMessage: text("status_message"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -28,94 +38,114 @@ export const workspaces = pgTable("workspaces", {
     createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const workspaceMembers = pgTable("workspace_members", {
-    id: varchar("id", { length: 36 })
-        .primaryKey()
-        .default(sql`gen_random_uuid()`),
-    workspaceId: varchar("workspace_id", { length: 36 })
-        .notNull()
-        .references(() => workspaces.id, { onDelete: "cascade" }),
-    userId: varchar("user_id", { length: 36 })
-        .notNull()
-        .references(() => users.id, { onDelete: "cascade" }),
-    role: text("role").default("member").notNull(),
-    joinedAt: timestamp("joined_at").defaultNow().notNull(),
-});
+export const workspaceMembers = pgTable(
+    "workspace_members",
+    {
+        id: varchar("id", { length: 36 })
+            .primaryKey()
+            .default(sql`gen_random_uuid()`),
+        workspaceId: varchar("workspace_id", { length: 36 })
+            .notNull()
+            .references(() => workspaces.id, { onDelete: "cascade" }),
+        userId: varchar("user_id", { length: 36 })
+            .notNull()
+            .references(() => users.id, { onDelete: "cascade" }),
+        role: text("role").default("member").notNull(),
+        joinedAt: timestamp("joined_at").defaultNow().notNull(),
+    },
+    (t) => [
+        uniqueIndex("workspace_members_workspace_user_idx").on(t.workspaceId, t.userId),
+        index("workspace_members_user_idx").on(t.userId),
+    ],
+);
 
-export const channels = pgTable("channels", {
-    id: varchar("id", { length: 36 })
-        .primaryKey()
-        .default(sql`gen_random_uuid()`),
-    workspaceId: varchar("workspace_id", { length: 36 })
-        .notNull()
-        .references(() => workspaces.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    description: text("description"),
-    isPrivate: boolean("is_private").default(false).notNull(),
-    createdById: varchar("created_by_id", { length: 36 })
-        .notNull()
-        .references(() => users.id),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const channels = pgTable(
+    "channels",
+    {
+        id: varchar("id", { length: 36 })
+            .primaryKey()
+            .default(sql`gen_random_uuid()`),
+        workspaceId: varchar("workspace_id", { length: 36 })
+            .notNull()
+            .references(() => workspaces.id, { onDelete: "cascade" }),
+        name: text("name").notNull(),
+        description: text("description"),
+        isPrivate: boolean("is_private").default(false).notNull(),
+        createdById: varchar("created_by_id", { length: 36 })
+            .notNull()
+            .references(() => users.id),
+        createdAt: timestamp("created_at").defaultNow().notNull(),
+    },
+    (t) => [uniqueIndex("channels_workspace_name_idx").on(t.workspaceId, t.name)],
+);
 
-export const channelMembers = pgTable("channel_members", {
-    id: varchar("id", { length: 36 })
-        .primaryKey()
-        .default(sql`gen_random_uuid()`),
-    channelId: varchar("channel_id", { length: 36 })
-        .notNull()
-        .references(() => channels.id, { onDelete: "cascade" }),
-    userId: varchar("user_id", { length: 36 })
-        .notNull()
-        .references(() => users.id, { onDelete: "cascade" }),
-    joinedAt: timestamp("joined_at").defaultNow().notNull(),
-});
+export const channelMembers = pgTable(
+    "channel_members",
+    {
+        id: varchar("id", { length: 36 })
+            .primaryKey()
+            .default(sql`gen_random_uuid()`),
+        channelId: varchar("channel_id", { length: 36 })
+            .notNull()
+            .references(() => channels.id, { onDelete: "cascade" }),
+        userId: varchar("user_id", { length: 36 })
+            .notNull()
+            .references(() => users.id, { onDelete: "cascade" }),
+        joinedAt: timestamp("joined_at").defaultNow().notNull(),
+    },
+    (t) => [
+        uniqueIndex("channel_members_channel_user_idx").on(t.channelId, t.userId),
+        index("channel_members_user_idx").on(t.userId),
+    ],
+);
 
-export const messages = pgTable("messages", {
-    id: varchar("id", { length: 36 })
-        .primaryKey()
-        .default(sql`gen_random_uuid()`),
-    channelId: varchar("channel_id", { length: 36 })
-        .notNull()
-        .references(() => channels.id, { onDelete: "cascade" }),
-    senderId: varchar("sender_id", { length: 36 })
-        .notNull()
-        .references(() => users.id),
-    content: text("content").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const messages = pgTable(
+    "messages",
+    {
+        id: varchar("id", { length: 36 })
+            .primaryKey()
+            .default(sql`gen_random_uuid()`),
+        channelId: varchar("channel_id", { length: 36 })
+            .notNull()
+            .references(() => channels.id, { onDelete: "cascade" }),
+        senderId: varchar("sender_id", { length: 36 })
+            .notNull()
+            .references(() => users.id),
+        content: text("content").notNull(),
+        createdAt: timestamp("created_at").defaultNow().notNull(),
+    },
+    (t) => [index("messages_channel_created_idx").on(t.channelId, t.createdAt, t.id)],
+);
 
-export const directMessages = pgTable("direct_messages", {
-    id: varchar("id", { length: 36 })
-        .primaryKey()
-        .default(sql`gen_random_uuid()`),
-    senderId: varchar("sender_id", { length: 36 })
-        .notNull()
-        .references(() => users.id),
-    receiverId: varchar("receiver_id", { length: 36 })
-        .notNull()
-        .references(() => users.id),
-    content: text("content").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-});
-
-export const userPresence = pgTable("user_presence", {
-    userId: varchar("user_id", { length: 36 })
-        .primaryKey()
-        .references(() => users.id, { onDelete: "cascade" }),
-    status: text("status").default("offline").notNull(),
-    lastSeen: timestamp("last_seen").defaultNow().notNull(),
-});
+export const directMessages = pgTable(
+    "direct_messages",
+    {
+        id: varchar("id", { length: 36 })
+            .primaryKey()
+            .default(sql`gen_random_uuid()`),
+        senderId: varchar("sender_id", { length: 36 })
+            .notNull()
+            .references(() => users.id),
+        receiverId: varchar("receiver_id", { length: 36 })
+            .notNull()
+            .references(() => users.id),
+        content: text("content").notNull(),
+        createdAt: timestamp("created_at").defaultNow().notNull(),
+    },
+    (t) => [
+        // Le due direzioni della conversazione usano lo stesso indice (BitmapOr).
+        index("direct_messages_pair_created_idx").on(t.senderId, t.receiverId, t.createdAt, t.id),
+    ],
+);
 
 // Relations
-export const usersRelations = relations(users, ({ many, one }) => ({
+export const usersRelations = relations(users, ({ many }) => ({
     workspacesOwned: many(workspaces),
     workspaceMemberships: many(workspaceMembers),
     channelMemberships: many(channelMembers),
     messagesSent: many(messages),
     directMessagesSent: many(directMessages, { relationName: "sender" }),
     directMessagesReceived: many(directMessages, { relationName: "receiver" }),
-    presence: one(userPresence),
 }));
 
 export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
@@ -160,10 +190,6 @@ export const directMessagesRelations = relations(directMessages, ({ one }) => ({
         references: [users.id],
         relationName: "receiver",
     }),
-}));
-
-export const userPresenceRelations = relations(userPresence, ({ one }) => ({
-    user: one(users, { fields: [userPresence.userId], references: [users.id] }),
 }));
 
 // Insert schemas
@@ -216,7 +242,6 @@ export type Message = typeof messages.$inferSelect;
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type DirectMessage = typeof directMessages.$inferSelect;
 export type InsertDirectMessage = z.infer<typeof insertDirectMessageSchema>;
-export type UserPresence = typeof userPresence.$inferSelect;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RegisterInput = z.infer<typeof registerSchema>;
 
