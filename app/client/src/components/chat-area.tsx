@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { format, isToday, isYesterday } from "date-fns";
 import { Send, Loader2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
+import { useMessageHistory } from "@/hooks/use-message-history";
 import { useSocket } from "@/lib/socket";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -25,10 +26,12 @@ export function ChatArea({ channel }: ChatAreaProps) {
     const { user } = useAuth();
     const { sendMessage: sendSocketMessage, subscribe } = useSocket();
 
-    const { data: messages, isLoading } = useQuery<MessageWithSender[]>({
-        queryKey: ["/api/channels", channel.id, "messages"],
-        enabled: !!channel,
-    });
+    const { messages, isLoading, hasOlder, isLoadingOlder, loadOlder } =
+        useMessageHistory<MessageWithSender>(
+            ["/api/channels", channel.id, "messages"],
+            `/api/channels/${channel.id}/messages`,
+            scrollContainerRef,
+        );
 
     const sendMutation = useMutation({
         mutationFn: async (content: string) => {
@@ -70,12 +73,6 @@ export function ChatArea({ channel }: ChatAreaProps) {
             unsubscribeTypingStop();
         };
     }, [channel.id, subscribe, user?.id]);
-
-    useEffect(() => {
-        if (scrollContainerRef.current) {
-            scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
-        }
-    }, [messages]);
 
     const handleTyping = () => {
         if (!isTyping) {
@@ -142,6 +139,18 @@ export function ChatArea({ channel }: ChatAreaProps) {
         <div className="h-full flex flex-col">
             <div className="flex-1 overflow-y-auto" ref={scrollContainerRef}>
                 <div className="p-4 space-y-6">
+                    {hasOlder && (
+                        <div className="flex justify-center">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={loadOlder}
+                                disabled={isLoadingOlder}
+                            >
+                                {isLoadingOlder ? "Caricamento…" : "Carica messaggi precedenti"}
+                            </Button>
+                        </div>
+                    )}
                     {isLoading ? (
                         <div className="space-y-4">
                             {[...Array(5)].map((_, i) => (

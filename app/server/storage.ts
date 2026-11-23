@@ -6,7 +6,6 @@ import {
     channelMembers,
     messages,
     directMessages,
-    userPresence,
     type User,
     type PublicUser,
     type InsertUser,
@@ -26,7 +25,30 @@ import {
     type DirectMessageWithUsers,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, asc, inArray } from "drizzle-orm";
+import { eq, and, or, asc, desc, inArray, lt, sql, type SQL } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
+
+/** Pagina di messaggi: gli ultimi `limit` prima del messaggio `before` (escluso). */
+export interface PageOptions {
+    before?: { id: string; createdAt: Date };
+    limit?: number;
+}
+
+export const DEFAULT_PAGE_SIZE = 50;
+export const MAX_PAGE_SIZE = 100;
+
+/** Condizione keyset su (created_at, id): stabile anche con più messaggi nello stesso istante. */
+function olderThan(
+    createdAt: PgColumn,
+    id: PgColumn,
+    before: PageOptions["before"],
+): SQL | undefined {
+    if (!before) return undefined;
+    return or(
+        lt(createdAt, before.createdAt),
+        and(eq(createdAt, before.createdAt), lt(id, before.id)),
+    );
+}
 
 /**
  * Colonne dell'utente che possono uscire dal server.
@@ -39,6 +61,7 @@ export const publicUserColumns = {
     avatar: users.avatar,
     status: users.status,
     statusMessage: users.statusMessage,
+    lastSeenAt: users.lastSeenAt,
     createdAt: users.createdAt,
 };
 
@@ -81,20 +104,32 @@ export interface IStorage {
     getChannelMemberIds(channelId: string): Promise<string[]>;
 
     // Messaggi
-    getMessages(channelId: string, limit?: number): Promise<MessageWithSender[]>;
+    getMessages(channelId: string, page?: PageOptions): Promise<MessageWithSender[]>;
+    getMessageCursor(channelId: string, messageId: string): Promise<PageOptions["before"]>;
     createMessage(message: InsertMessage): Promise<Message>;
 
     // Messaggi diretti
     getDirectMessages(
         userId1: string,
         userId2: string,
-        limit?: number,
+        page?: PageOptions,
     ): Promise<DirectMessageWithUsers[]>;
+    getDirectMessageCursor(
+        userId1: string,
+        userId2: string,
+        messageId: string,
+    ): Promise<PageOptions["before"]>;
     createDirectMessage(message: InsertDirectMessage): Promise<DirectMessage>;
 
     // Presenza
     updatePresence(userId: string, status: string): Promise<void>;
-    getPresence(userId: string): Promise<{ status: string } | undefined>;
+}
+
+function conversation(userId1: string, userId2: string) {
+    return or(
+        and(eq(directMessages.senderId, userId1), eq(directMessages.receiverId, userId2)),
+        and(eq(directMessages.senderId, userId2), eq(directMessages.receiverId, userId1)),
+    );
 }
 
 export class DatabaseStorage implements IStorage {
@@ -239,8 +274,8 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Messaggi
-    async getMessages(channelId: string, limit = 100): Promise<MessageWithSender[]> {
-        return db
+    async getMessages(channelId: string, page: PageOptions = {}): Promise<MessageWithSender[]> {
+        const rows = await db
             .select({
                 id: messages.id,
                 channelId: messages.channelId,
@@ -251,9 +286,24 @@ export class DatabaseStorage implements IStorage {
             })
             .from(messages)
             .innerJoin(users, eq(messages.senderId, users.id))
-            .where(eq(messages.channelId, channelId))
-            .orderBy(asc(messages.createdAt))
-            .limit(limit);
+            .where(
+                and(
+                    eq(messages.channelId, channelId),
+                    olderThan(messages.createdAt, messages.id, page.before),
+                ),
+            )
+            .orderBy(desc(messages.createdAt), desc(messages.id))
+            .limit(page.limit ?? DEFAULT_PAGE_SIZE);
+        // Letti dal più recente per prendere gli ultimi N, restituiti in ordine cronologico.
+        return rows.reverse();
+    }
+
+    async getMessageCursor(channelId: string, messageId: string) {
+        const [row] = await db
+            .select({ id: messages.id, createdAt: messages.createdAt })
+            .from(messages)
+            .where(and(eq(messages.id, messageId), eq(messages.channelId, channelId)));
+        return row;
     }
 
     async createMessage(insertMessage: InsertMessage): Promise<Message> {
@@ -265,25 +315,20 @@ export class DatabaseStorage implements IStorage {
     async getDirectMessages(
         userId1: string,
         userId2: string,
-        limit = 100,
+        page: PageOptions = {},
     ): Promise<DirectMessageWithUsers[]> {
-        const result = await db
+        const rows = await db
             .select()
             .from(directMessages)
             .where(
-                or(
-                    and(
-                        eq(directMessages.senderId, userId1),
-                        eq(directMessages.receiverId, userId2),
-                    ),
-                    and(
-                        eq(directMessages.senderId, userId2),
-                        eq(directMessages.receiverId, userId1),
-                    ),
+                and(
+                    conversation(userId1, userId2),
+                    olderThan(directMessages.createdAt, directMessages.id, page.before),
                 ),
             )
-            .orderBy(asc(directMessages.createdAt))
-            .limit(limit);
+            .orderBy(desc(directMessages.createdAt), desc(directMessages.id))
+            .limit(page.limit ?? DEFAULT_PAGE_SIZE);
+        const result = rows.reverse();
 
         if (result.length === 0) return [];
 
@@ -300,6 +345,14 @@ export class DatabaseStorage implements IStorage {
         }));
     }
 
+    async getDirectMessageCursor(userId1: string, userId2: string, messageId: string) {
+        const [row] = await db
+            .select({ id: directMessages.id, createdAt: directMessages.createdAt })
+            .from(directMessages)
+            .where(and(eq(directMessages.id, messageId), conversation(userId1, userId2)));
+        return row;
+    }
+
     async createDirectMessage(insertMessage: InsertDirectMessage): Promise<DirectMessage> {
         const [message] = await db.insert(directMessages).values(insertMessage).returning();
         return message;
@@ -308,22 +361,9 @@ export class DatabaseStorage implements IStorage {
     // Presenza
     async updatePresence(userId: string, status: string): Promise<void> {
         await db
-            .insert(userPresence)
-            .values({ userId, status, lastSeen: new Date() })
-            .onConflictDoUpdate({
-                target: userPresence.userId,
-                set: { status, lastSeen: new Date() },
-            });
-
-        await db.update(users).set({ status }).where(eq(users.id, userId));
-    }
-
-    async getPresence(userId: string): Promise<{ status: string } | undefined> {
-        const [presence] = await db
-            .select({ status: userPresence.status })
-            .from(userPresence)
-            .where(eq(userPresence.userId, userId));
-        return presence;
+            .update(users)
+            .set({ status, lastSeenAt: sql`now()` })
+            .where(eq(users.id, userId));
     }
 }
 
