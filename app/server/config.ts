@@ -14,7 +14,8 @@ const envSchema = z.object({
         ),
 });
 
-const parsed = envSchema.safeParse(process.env);
+// NODE_ENV letto esplicitamente: nel bundle di produzione esbuild lo sostituisce con "production".
+const parsed = envSchema.safeParse({ ...process.env, NODE_ENV: process.env.NODE_ENV });
 
 if (!parsed.success) {
     const problems = parsed.error.issues

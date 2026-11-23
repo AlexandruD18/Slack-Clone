@@ -2,32 +2,14 @@ import { build as esbuild } from "esbuild";
 import { build as viteBuild } from "vite";
 import { rm, readFile } from "fs/promises";
 
-// server deps to bundle to reduce openat(2) syscalls
-// which helps cold start times
+// Dipendenze del server incluse nel bundle: riducono i file da aprire all'avvio.
 const allowlist = [
-    "@google/generative-ai",
-    "@neondatabase/serverless",
-    "axios",
-    "connect-pg-simple",
-    "cors",
     "date-fns",
     "drizzle-orm",
     "drizzle-zod",
     "express",
-    "express-rate-limit",
-    "express-session",
     "jsonwebtoken",
-    "memorystore",
-    "multer",
-    "nanoid",
-    "nodemailer",
-    "openai",
-    "passport",
-    "passport-local",
-    "stripe",
-    "uuid",
     "ws",
-    "xlsx",
     "zod",
     "zod-validation-error",
 ];
@@ -54,6 +36,8 @@ async function buildAll() {
         outfile: "dist/index.cjs",
         define: {
             "process.env.NODE_ENV": '"production"',
+            // Nel formato CommonJS import.meta è vuoto: lo sostituisco con __dirname.
+            "import.meta.dirname": "__dirname",
         },
         minify: true,
         external: externals,
