@@ -9,12 +9,14 @@ import { WorkspaceProvider } from "@/lib/workspace";
 import AuthPage from "@/pages/auth";
 import HomePage from "@/pages/home";
 import NotFound from "@/pages/not-found";
+import InvitePage from "@/pages/invite";
 
 function Router() {
     return (
         <Switch>
             <Route path="/" component={HomePage} />
             <Route path="/auth" component={AuthPage} />
+            <Route path="/invito/:token" component={InvitePage} />
             <Route component={NotFound} />
         </Switch>
     );

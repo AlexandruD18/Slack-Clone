@@ -6,6 +6,7 @@ import {
     channelMembers,
     messages,
     directMessages,
+    workspaceInvites,
     type User,
     type PublicUser,
     type InsertUser,
@@ -15,7 +16,6 @@ import {
     type InsertWorkspaceMember,
     type Channel,
     type InsertChannel,
-    type ChannelMember,
     type InsertChannelMember,
     type Message,
     type InsertMessage,
@@ -23,10 +23,12 @@ import {
     type InsertDirectMessage,
     type MessageWithSender,
     type DirectMessageWithUsers,
+    type WorkspaceInvite,
+    type WorkspaceMemberWithUser,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, asc, desc, inArray, sql, type SQL } from "drizzle-orm";
-import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
+import { eq, and, or, asc, desc, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { alias, type PgColumn, type PgTable } from "drizzle-orm/pg-core";
 
 /** Pagina di messaggi: gli ultimi `limit` prima del messaggio `before` (escluso). */
 export interface PageOptions {
@@ -91,10 +93,26 @@ export interface IStorage {
     createWorkspace(workspace: InsertWorkspace): Promise<Workspace>;
 
     // Membri dei workspace
-    getWorkspaceMembers(workspaceId: string): Promise<{ user: PublicUser }[]>;
+    getWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberWithUser[]>;
     getWorkspaceMemberIds(workspaceId: string): Promise<string[]>;
     addWorkspaceMember(member: InsertWorkspaceMember): Promise<WorkspaceMember>;
     isWorkspaceMember(workspaceId: string, userId: string): Promise<boolean>;
+    getWorkspaceRole(workspaceId: string, userId: string): Promise<string | undefined>;
+    shareWorkspace(userId1: string, userId2: string): Promise<boolean>;
+    joinWorkspace(workspaceId: string, userId: string): Promise<boolean>;
+
+    // Inviti
+    createInvite(invite: {
+        workspaceId: string;
+        tokenHash: string;
+        createdById: string;
+        expiresAt: Date;
+    }): Promise<WorkspaceInvite>;
+    getValidInvite(
+        tokenHash: string,
+    ): Promise<{ invite: WorkspaceInvite; workspace: Workspace } | undefined>;
+    countInviteUse(inviteId: string): Promise<void>;
+    revokeInvite(workspaceId: string, inviteId: string): Promise<boolean>;
 
     // Canali
     getChannel(id: string): Promise<Channel | undefined>;
@@ -102,9 +120,10 @@ export interface IStorage {
     createChannel(channel: InsertChannel): Promise<Channel>;
 
     // Membri dei canali
-    addChannelMember(member: InsertChannelMember): Promise<ChannelMember>;
+    addChannelMember(member: InsertChannelMember): Promise<void>;
     isChannelMember(channelId: string, userId: string): Promise<boolean>;
     getChannelMemberIds(channelId: string): Promise<string[]>;
+    getChannelMembers(channelId: string): Promise<PublicUser[]>;
 
     // Messaggi
     getMessages(channelId: string, page?: PageOptions): Promise<MessageWithSender[]>;
@@ -191,12 +210,113 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Membri dei workspace
-    async getWorkspaceMembers(workspaceId: string): Promise<{ user: PublicUser }[]> {
+    async getWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberWithUser[]> {
         return db
-            .select({ user: publicUserColumns })
+            .select({ user: publicUserColumns, role: workspaceMembers.role })
             .from(workspaceMembers)
             .innerJoin(users, eq(workspaceMembers.userId, users.id))
-            .where(eq(workspaceMembers.workspaceId, workspaceId));
+            .where(eq(workspaceMembers.workspaceId, workspaceId))
+            .orderBy(asc(users.name));
+    }
+
+    async getWorkspaceRole(workspaceId: string, userId: string): Promise<string | undefined> {
+        const [row] = await db
+            .select({ role: workspaceMembers.role })
+            .from(workspaceMembers)
+            .where(
+                and(
+                    eq(workspaceMembers.workspaceId, workspaceId),
+                    eq(workspaceMembers.userId, userId),
+                ),
+            );
+        return row?.role;
+    }
+
+    /** Vero se i due utenti hanno almeno un workspace in comune. */
+    async shareWorkspace(userId1: string, userId2: string): Promise<boolean> {
+        const other = alias(workspaceMembers, "other");
+        const [row] = await db
+            .select({ id: workspaceMembers.id })
+            .from(workspaceMembers)
+            .innerJoin(other, eq(other.workspaceId, workspaceMembers.workspaceId))
+            .where(and(eq(workspaceMembers.userId, userId1), eq(other.userId, userId2)))
+            .limit(1);
+        return !!row;
+    }
+
+    /**
+     * Aggiunge l'utente al workspace e al canale #general, in una transazione.
+     * Restituisce false se era già membro.
+     */
+    async joinWorkspace(workspaceId: string, userId: string): Promise<boolean> {
+        return db.transaction(async (tx) => {
+            const inserted = await tx
+                .insert(workspaceMembers)
+                .values({ workspaceId, userId, role: "member" })
+                .onConflictDoNothing()
+                .returning({ id: workspaceMembers.id });
+            if (inserted.length === 0) return false;
+
+            const [general] = await tx
+                .select({ id: channels.id })
+                .from(channels)
+                .where(and(eq(channels.workspaceId, workspaceId), eq(channels.name, "general")));
+            if (general) {
+                await tx
+                    .insert(channelMembers)
+                    .values({ channelId: general.id, userId })
+                    .onConflictDoNothing();
+            }
+            return true;
+        });
+    }
+
+    // Inviti
+    async createInvite(invite: {
+        workspaceId: string;
+        tokenHash: string;
+        createdById: string;
+        expiresAt: Date;
+    }): Promise<WorkspaceInvite> {
+        const [row] = await db.insert(workspaceInvites).values(invite).returning();
+        return row;
+    }
+
+    /** Invito esistente, non revocato e non scaduto, con il suo workspace. */
+    async getValidInvite(tokenHash: string) {
+        const [row] = await db
+            .select({ invite: workspaceInvites, workspace: workspaces })
+            .from(workspaceInvites)
+            .innerJoin(workspaces, eq(workspaceInvites.workspaceId, workspaces.id))
+            .where(
+                and(
+                    eq(workspaceInvites.tokenHash, tokenHash),
+                    isNull(workspaceInvites.revokedAt),
+                    gt(workspaceInvites.expiresAt, sql`now()`),
+                ),
+            );
+        return row;
+    }
+
+    async countInviteUse(inviteId: string): Promise<void> {
+        await db
+            .update(workspaceInvites)
+            .set({ uses: sql`${workspaceInvites.uses} + 1` })
+            .where(eq(workspaceInvites.id, inviteId));
+    }
+
+    async revokeInvite(workspaceId: string, inviteId: string): Promise<boolean> {
+        const rows = await db
+            .update(workspaceInvites)
+            .set({ revokedAt: sql`now()` })
+            .where(
+                and(
+                    eq(workspaceInvites.id, inviteId),
+                    eq(workspaceInvites.workspaceId, workspaceId),
+                ),
+            )
+            .returning({ id: workspaceInvites.id });
+        return rows.length > 0;
     }
 
     async getWorkspaceMemberIds(workspaceId: string): Promise<string[]> {
@@ -256,9 +376,18 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Membri dei canali
-    async addChannelMember(member: InsertChannelMember): Promise<ChannelMember> {
-        const [channelMember] = await db.insert(channelMembers).values(member).returning();
-        return channelMember;
+    /** Idempotente: aggiungere un membro già presente non fa nulla. */
+    async addChannelMember(member: InsertChannelMember): Promise<void> {
+        await db.insert(channelMembers).values(member).onConflictDoNothing();
+    }
+
+    async getChannelMembers(channelId: string): Promise<PublicUser[]> {
+        return db
+            .select(publicUserColumns)
+            .from(channelMembers)
+            .innerJoin(users, eq(channelMembers.userId, users.id))
+            .where(eq(channelMembers.channelId, channelId))
+            .orderBy(asc(users.name));
     }
 
     async isChannelMember(channelId: string, userId: string): Promise<boolean> {

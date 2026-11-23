@@ -10,10 +10,10 @@ import {
     MessageSquare,
     ChevronDown,
     ChevronRight,
-    Settings,
     LogOut,
     Users,
     Loader2,
+    UserPlus,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useWorkspace } from "@/lib/workspace";
@@ -50,7 +50,8 @@ import {
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import type { Channel, PublicUser as User } from "@shared/schema";
+import type { Channel, PublicUser as User, WorkspaceMemberWithUser } from "@shared/schema";
+import { InviteDialog } from "@/components/invite-dialog";
 
 const createChannelSchema = z.object({
     name: z.string().min(2, "Channel name must be at least 2 characters").max(50),
@@ -83,7 +84,8 @@ export function ChatSidebar({
     const { user, logout } = useAuth();
     const { toast } = useToast();
 
-    const { data: workspaceMembers } = useQuery<{ user: User }[]>({
+    const [inviteOpen, setInviteOpen] = useState(false);
+    const { data: workspaceMembers } = useQuery<WorkspaceMemberWithUser[]>({
         queryKey: ["/api/workspaces", currentWorkspace?.id, "members"],
         enabled: !!currentWorkspace,
     });
@@ -131,6 +133,8 @@ export function ChatSidebar({
     };
 
     const otherMembers = workspaceMembers?.filter((m) => m.user.id !== user?.id) || [];
+    const myRole = workspaceMembers?.find((m) => m.user.id === user?.id)?.role;
+    const canInvite = myRole === "owner" || myRole === "admin";
 
     if (isCollapsed) {
         return (
@@ -175,10 +179,15 @@ export function ChatSidebar({
                             <Users className="w-4 h-4 mr-2" />
                             Switch workspace
                         </DropdownMenuItem>
-                        <DropdownMenuItem data-testid="menu-item-settings">
-                            <Settings className="w-4 h-4 mr-2" />
-                            Workspace settings
-                        </DropdownMenuItem>
+                        {canInvite && (
+                            <DropdownMenuItem
+                                onClick={() => setInviteOpen(true)}
+                                data-testid="menu-item-invite"
+                            >
+                                <UserPlus className="w-4 h-4 mr-2" aria-hidden="true" />
+                                Invita persone
+                            </DropdownMenuItem>
+                        )}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onClick={handleLogout} data-testid="menu-item-logout">
                             <LogOut className="w-4 h-4 mr-2" />
@@ -187,6 +196,15 @@ export function ChatSidebar({
                     </DropdownMenuContent>
                 </DropdownMenu>
             </div>
+
+            {currentWorkspace && (
+                <InviteDialog
+                    workspaceId={currentWorkspace.id}
+                    workspaceName={currentWorkspace.name}
+                    open={inviteOpen}
+                    onOpenChange={setInviteOpen}
+                />
+            )}
 
             <ScrollArea className="flex-1">
                 <div className="p-2">

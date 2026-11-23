@@ -4,7 +4,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { storage, toPublicUser, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "./storage";
 import { config } from "./config";
 import { hash, hashSync, compare } from "bcrypt";
-import { randomUUID } from "crypto";
+import { createHash, randomBytes, randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { loginSchema, registerSchema, type Channel } from "@shared/schema";
@@ -118,6 +118,16 @@ function isUniqueViolation(error: unknown): boolean {
     return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }
 
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function hashInviteToken(token: string) {
+    return createHash("sha256").update(token).digest("hex");
+}
+
+function canManageWorkspace(role: string) {
+    return role === "owner" || role === "admin";
+}
+
 /** Parametri di paginazione: `?limit=50&before=<id messaggio>`. */
 const pageQuerySchema = z.object({
     limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
@@ -195,19 +205,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                     }
 
                     case "dm:typing:start":
-                        broadcastToUser(payload.receiverId, "dm:typing:start", {
-                            senderId: userId,
-                            receiverId: payload.receiverId,
-                            senderName: user?.name,
-                        });
+                    case "dm:typing:stop": {
+                        const receiverId = payload?.receiverId;
+                        if (
+                            typeof receiverId === "string" &&
+                            (await storage.shareWorkspace(userId, receiverId))
+                        ) {
+                            broadcastToUser(receiverId, type, {
+                                senderId: userId,
+                                receiverId,
+                                senderName: user?.name,
+                            });
+                        }
                         break;
-
-                    case "dm:typing:stop":
-                        broadcastToUser(payload.receiverId, "dm:typing:stop", {
-                            senderId: userId,
-                            receiverId: payload.receiverId,
-                        });
-                        break;
+                    }
                 }
             } catch (error) {
                 console.error("WebSocket message error:", error);
@@ -555,12 +566,172 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         },
     );
 
+    // Inviti nei workspace
+    app.post(
+        "/api/workspaces/:workspaceId/invites",
+        authenticateToken,
+        async (req: AuthenticatedRequest, res) => {
+            try {
+                const role = await storage.getWorkspaceRole(req.params.workspaceId, req.user!.id);
+                if (!role) {
+                    return res.status(404).json({ message: "Workspace not found" });
+                }
+                if (!canManageWorkspace(role)) {
+                    return res
+                        .status(403)
+                        .json({ message: "Only owners and admins can invite people" });
+                }
+
+                const token = randomBytes(24).toString("base64url");
+                const invite = await storage.createInvite({
+                    workspaceId: req.params.workspaceId,
+                    tokenHash: hashInviteToken(token),
+                    createdById: req.user!.id,
+                    expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+                });
+
+                // Il token in chiaro esce una volta sola, in questa risposta.
+                res.status(201).json({
+                    id: invite.id,
+                    token,
+                    path: `/invito/${token}`,
+                    expiresAt: invite.expiresAt,
+                });
+            } catch (error) {
+                console.error("Create invite error:", error);
+                res.status(500).json({ message: "Failed to create invite" });
+            }
+        },
+    );
+
+    app.delete(
+        "/api/workspaces/:workspaceId/invites/:inviteId",
+        authenticateToken,
+        async (req: AuthenticatedRequest, res) => {
+            try {
+                const role = await storage.getWorkspaceRole(req.params.workspaceId, req.user!.id);
+                if (!role || !canManageWorkspace(role)) {
+                    return res.status(404).json({ message: "Invite not found" });
+                }
+                const revoked = await storage.revokeInvite(
+                    req.params.workspaceId,
+                    req.params.inviteId,
+                );
+                if (!revoked) {
+                    return res.status(404).json({ message: "Invite not found" });
+                }
+                res.status(204).end();
+            } catch (error) {
+                console.error("Revoke invite error:", error);
+                res.status(500).json({ message: "Failed to revoke invite" });
+            }
+        },
+    );
+
+    app.get("/api/invites/:token", authenticateToken, async (req: AuthenticatedRequest, res) => {
+        try {
+            const found = await storage.getValidInvite(hashInviteToken(req.params.token));
+            if (!found) {
+                return res.status(404).json({ message: "This invite is invalid or has expired" });
+            }
+            const alreadyMember = await storage.isWorkspaceMember(found.workspace.id, req.user!.id);
+            res.json({
+                workspace: { id: found.workspace.id, name: found.workspace.name },
+                alreadyMember,
+            });
+        } catch (error) {
+            console.error("Get invite error:", error);
+            res.status(500).json({ message: "Failed to read invite" });
+        }
+    });
+
+    app.post(
+        "/api/invites/:token/accept",
+        authenticateToken,
+        async (req: AuthenticatedRequest, res) => {
+            try {
+                const found = await storage.getValidInvite(hashInviteToken(req.params.token));
+                if (!found) {
+                    return res
+                        .status(404)
+                        .json({ message: "This invite is invalid or has expired" });
+                }
+
+                const joined = await storage.joinWorkspace(found.workspace.id, req.user!.id);
+                if (joined) {
+                    await storage.countInviteUse(found.invite.id);
+                    const user = await storage.getUser(req.user!.id);
+                    await broadcastToWorkspaceMembers(
+                        found.workspace.id,
+                        "member:joined",
+                        { workspaceId: found.workspace.id, user },
+                        req.user!.id,
+                    );
+                }
+                res.json(found.workspace);
+            } catch (error) {
+                console.error("Accept invite error:", error);
+                res.status(500).json({ message: "Failed to accept invite" });
+            }
+        },
+    );
+
+    // Membri dei canali (servono soprattutto per i canali privati)
+    app.get(
+        "/api/channels/:channelId/members",
+        authenticateToken,
+        async (req: AuthenticatedRequest, res) => {
+            try {
+                const channel = await getAccessibleChannel(req.params.channelId, req.user!.id);
+                if (!channel) {
+                    return res.status(404).json({ message: "Channel not found" });
+                }
+                res.json(await storage.getChannelMembers(channel.id));
+            } catch (error) {
+                console.error("Get channel members error:", error);
+                res.status(500).json({ message: "Failed to get channel members" });
+            }
+        },
+    );
+
+    app.post(
+        "/api/channels/:channelId/members",
+        authenticateToken,
+        async (req: AuthenticatedRequest, res) => {
+            try {
+                const channel = await getAccessibleChannel(req.params.channelId, req.user!.id);
+                if (!channel) {
+                    return res.status(404).json({ message: "Channel not found" });
+                }
+                const body = z.object({ userId: z.string().uuid() }).safeParse(req.body);
+                if (!body.success) {
+                    return res.status(400).json({ message: "A valid userId is required" });
+                }
+                // Si può aggiungere solo chi fa già parte del workspace.
+                if (!(await storage.isWorkspaceMember(channel.workspaceId, body.data.userId))) {
+                    return res
+                        .status(400)
+                        .json({ message: "This person is not a member of the workspace" });
+                }
+
+                await storage.addChannelMember({ channelId: channel.id, userId: body.data.userId });
+                broadcastToUser(body.data.userId, "channel:added", {
+                    workspaceId: channel.workspaceId,
+                    channel,
+                });
+                res.status(204).end();
+            } catch (error) {
+                console.error("Add channel member error:", error);
+                res.status(500).json({ message: "Failed to add channel member" });
+            }
+        },
+    );
+
     // Direct message routes
     app.get("/api/dm/:userId", authenticateToken, async (req: AuthenticatedRequest, res) => {
         try {
-            // Verify the other user exists
-            const otherUser = await storage.getUser(req.params.userId);
-            if (!otherUser) {
+            // Solo tra persone che condividono un workspace: per gli altri l'utente non esiste.
+            if (!(await storage.shareWorkspace(req.user!.id, req.params.userId))) {
                 return res.status(404).json({ message: "User not found" });
             }
 
@@ -592,6 +763,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     app.post("/api/dm/:userId", authenticateToken, async (req: AuthenticatedRequest, res) => {
         try {
+            if (!(await storage.shareWorkspace(req.user!.id, req.params.userId))) {
+                return res.status(404).json({ message: "User not found" });
+            }
             const receiver = await storage.getUser(req.params.userId);
             if (!receiver) {
                 return res.status(404).json({ message: "User not found" });

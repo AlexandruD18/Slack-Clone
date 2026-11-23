@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { MessageSquare, ArrowRight, Loader2 } from "lucide-react";
 import { loginSchema, registerSchema, type LoginInput, type RegisterInput } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
+import { safeNextPath } from "@/lib/redirect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,8 +24,18 @@ import { useToast } from "@/hooks/use-toast";
 export default function AuthPage() {
     const [isLogin, setIsLogin] = useState(true);
     const [, setLocation] = useLocation();
-    const { login } = useAuth();
+    const search = useSearch();
+    const { user, login } = useAuth();
     const { toast } = useToast();
+
+    // Il redirect parte solo dopo che l'utente è nello stato di React.
+    // Chiamare setLocation subito dopo login() faceva vedere a Home un utente
+    // ancora nullo, che riportava qui.
+    useEffect(() => {
+        if (user) {
+            setLocation(safeNextPath(search), { replace: true });
+        }
+    }, [user, search, setLocation]);
 
     const loginForm = useForm<LoginInput>({
         resolver: zodResolver(loginSchema),
@@ -44,7 +55,6 @@ export default function AuthPage() {
         onSuccess: (data) => {
             login(data.token, data.user);
             toast({ title: "Welcome back!", description: "Successfully logged in." });
-            setLocation("/");
         },
         onError: (error: Error) => {
             toast({
@@ -63,7 +73,6 @@ export default function AuthPage() {
         onSuccess: (data) => {
             login(data.token, data.user);
             toast({ title: "Welcome!", description: "Account created successfully." });
-            setLocation("/");
         },
         onError: (error: Error) => {
             toast({

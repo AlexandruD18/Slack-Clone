@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Menu, X } from "lucide-react";
+import { queryClient } from "@/lib/queryClient";
+import { useSocket } from "@/lib/socket";
+import { ChannelMembersDialog } from "@/components/channel-members-dialog";
+import { Lock, Menu, Users, X } from "lucide-react";
 import { useWorkspace } from "@/lib/workspace";
 import { ChatSidebar } from "@/components/chat-sidebar";
 import { ChatArea } from "@/components/chat-area";
@@ -13,7 +16,33 @@ export function ChatLayout() {
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
     const [selectedDMUser, setSelectedDMUser] = useState<User | null>(null);
+    const [membersOpen, setMembersOpen] = useState(false);
     const { currentWorkspace, currentChannel, setCurrentChannel } = useWorkspace();
+    const { subscribe } = useSocket();
+
+    // Nuovi membri e nuovi canali privati compaiono senza ricaricare la pagina.
+    useEffect(() => {
+        if (!currentWorkspace) return;
+        const workspaceId = currentWorkspace.id;
+        const offJoined = subscribe("member:joined", (payload) => {
+            if (payload.workspaceId === workspaceId) {
+                queryClient.invalidateQueries({
+                    queryKey: ["/api/workspaces", workspaceId, "members"],
+                });
+            }
+        });
+        const offAdded = subscribe("channel:added", (payload) => {
+            if (payload.workspaceId === workspaceId) {
+                queryClient.invalidateQueries({
+                    queryKey: ["/api/workspaces", workspaceId, "channels"],
+                });
+            }
+        });
+        return () => {
+            offJoined();
+            offAdded();
+        };
+    }, [currentWorkspace, subscribe]);
 
     const { data: channels } = useQuery<Channel[]>({
         queryKey: ["/api/workspaces", currentWorkspace?.id, "channels"],
@@ -86,7 +115,31 @@ export function ChatLayout() {
                                   ? `# ${currentChannel.name}`
                                   : "Select a channel"}
                         </h1>
+                        {currentChannel?.isPrivate && !selectedDMUser && (
+                            <Lock
+                                className="w-4 h-4 text-muted-foreground shrink-0"
+                                aria-label="Canale privato"
+                            />
+                        )}
                     </div>
+                    {currentChannel?.isPrivate && !selectedDMUser && (
+                        <>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setMembersOpen(true)}
+                                data-testid="button-channel-members"
+                            >
+                                <Users className="w-4 h-4 mr-2" aria-hidden="true" />
+                                Persone
+                            </Button>
+                            <ChannelMembersDialog
+                                channel={currentChannel}
+                                open={membersOpen}
+                                onOpenChange={setMembersOpen}
+                            />
+                        </>
+                    )}
                 </header>
 
                 <div className="flex-1 overflow-hidden">
