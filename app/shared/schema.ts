@@ -134,12 +134,7 @@ export const directMessages = pgTable(
     },
     (t) => [
         // Le due direzioni della conversazione usano lo stesso indice (BitmapOr).
-        index("direct_messages_pair_created_idx").on(
-            t.senderId,
-            t.receiverId,
-            t.createdAt,
-            t.id,
-        ),
+        index("direct_messages_pair_created_idx").on(t.senderId, t.receiverId, t.createdAt, t.id),
     ],
 );
 
