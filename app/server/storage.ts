@@ -9,6 +9,7 @@ import {
     workspaceInvites,
     type User,
     type PublicUser,
+    type SelfUser,
     type InsertUser,
     type Workspace,
     type InsertWorkspace,
@@ -61,7 +62,6 @@ function olderThan(
  */
 export const publicUserColumns = {
     id: users.id,
-    email: users.email,
     name: users.name,
     avatar: users.avatar,
     status: users.status,
@@ -70,22 +70,34 @@ export const publicUserColumns = {
     createdAt: users.createdAt,
 };
 
-export function toPublicUser(user: User): PublicUser {
+/** Come publicUserColumns più l'email: solo per l'utente stesso. */
+export const selfUserColumns = { ...publicUserColumns, email: users.email };
+
+export function toSelfUser(user: User): SelfUser {
     const { password, ...rest } = user;
     return rest;
+}
+
+export interface ActiveInvite {
+    id: string;
+    createdAt: Date;
+    expiresAt: Date;
+    uses: number;
+    createdByName: string;
 }
 
 export interface IStorage {
     // Utenti
     getUser(id: string): Promise<PublicUser | undefined>;
+    getSelf(id: string): Promise<SelfUser | undefined>;
     /** Unico metodo che restituisce l'hash della password: serve solo al login. */
     getUserWithPasswordByEmail(email: string): Promise<User | undefined>;
     emailExists(email: string): Promise<boolean>;
-    createUser(user: InsertUser): Promise<PublicUser>;
+    createUser(user: InsertUser): Promise<SelfUser>;
     updateUser(
         id: string,
         data: Partial<Pick<User, "name" | "avatar" | "statusMessage">>,
-    ): Promise<PublicUser | undefined>;
+    ): Promise<SelfUser | undefined>;
 
     // Workspace
     getWorkspace(id: string): Promise<Workspace | undefined>;
@@ -112,6 +124,11 @@ export interface IStorage {
         tokenHash: string,
     ): Promise<{ invite: WorkspaceInvite; workspace: Workspace } | undefined>;
     countInviteUse(inviteId: string): Promise<void>;
+    listActiveInvites(workspaceId: string): Promise<ActiveInvite[]>;
+    acceptInvite(
+        tokenHash: string,
+        userId: string,
+    ): Promise<{ workspace: Workspace; joined: boolean } | undefined>;
     revokeInvite(workspaceId: string, inviteId: string): Promise<boolean>;
 
     // Canali
@@ -162,6 +179,11 @@ export class DatabaseStorage implements IStorage {
         return user;
     }
 
+    async getSelf(id: string): Promise<SelfUser | undefined> {
+        const [user] = await db.select(selfUserColumns).from(users).where(eq(users.id, id));
+        return user;
+    }
+
     async getUserWithPasswordByEmail(email: string): Promise<User | undefined> {
         const [user] = await db.select().from(users).where(eq(users.email, email));
         return user;
@@ -172,20 +194,20 @@ export class DatabaseStorage implements IStorage {
         return !!row;
     }
 
-    async createUser(insertUser: InsertUser): Promise<PublicUser> {
-        const [user] = await db.insert(users).values(insertUser).returning(publicUserColumns);
+    async createUser(insertUser: InsertUser): Promise<SelfUser> {
+        const [user] = await db.insert(users).values(insertUser).returning(selfUserColumns);
         return user;
     }
 
     async updateUser(
         id: string,
         data: Partial<Pick<User, "name" | "avatar" | "statusMessage">>,
-    ): Promise<PublicUser | undefined> {
+    ): Promise<SelfUser | undefined> {
         const [user] = await db
             .update(users)
             .set(data)
             .where(eq(users.id, id))
-            .returning(publicUserColumns);
+            .returning(selfUserColumns);
         return user;
     }
 
@@ -305,6 +327,80 @@ export class DatabaseStorage implements IStorage {
             .where(eq(workspaceInvites.id, inviteId));
     }
 
+    /** Inviti non revocati e non scaduti, senza hash: per l'elenco nel dialog. */
+    async listActiveInvites(workspaceId: string): Promise<ActiveInvite[]> {
+        return db
+            .select({
+                id: workspaceInvites.id,
+                createdAt: workspaceInvites.createdAt,
+                expiresAt: workspaceInvites.expiresAt,
+                uses: workspaceInvites.uses,
+                createdByName: users.name,
+            })
+            .from(workspaceInvites)
+            .innerJoin(users, eq(workspaceInvites.createdById, users.id))
+            .where(
+                and(
+                    eq(workspaceInvites.workspaceId, workspaceId),
+                    isNull(workspaceInvites.revokedAt),
+                    gt(workspaceInvites.expiresAt, sql`now()`),
+                ),
+            )
+            .orderBy(desc(workspaceInvites.createdAt));
+    }
+
+    /**
+     * Valida e usa l'invito nella stessa transazione. FOR UPDATE blocca la riga:
+     * una revoca concorrente aspetta, oppure l'accettazione vede l'invito già revocato.
+     */
+    async acceptInvite(tokenHash: string, userId: string) {
+        return db.transaction(async (tx) => {
+            const [row] = await tx
+                .select({ invite: workspaceInvites, workspace: workspaces })
+                .from(workspaceInvites)
+                .innerJoin(workspaces, eq(workspaceInvites.workspaceId, workspaces.id))
+                .where(
+                    and(
+                        eq(workspaceInvites.tokenHash, tokenHash),
+                        isNull(workspaceInvites.revokedAt),
+                        gt(workspaceInvites.expiresAt, sql`now()`),
+                    ),
+                )
+                .for("update", { of: workspaceInvites });
+            if (!row) return undefined;
+
+            const inserted = await tx
+                .insert(workspaceMembers)
+                .values({ workspaceId: row.workspace.id, userId, role: "member" })
+                .onConflictDoNothing()
+                .returning({ id: workspaceMembers.id });
+            const joined = inserted.length > 0;
+
+            if (joined) {
+                const [general] = await tx
+                    .select({ id: channels.id })
+                    .from(channels)
+                    .where(
+                        and(
+                            eq(channels.workspaceId, row.workspace.id),
+                            eq(channels.name, "general"),
+                        ),
+                    );
+                if (general) {
+                    await tx
+                        .insert(channelMembers)
+                        .values({ channelId: general.id, userId })
+                        .onConflictDoNothing();
+                }
+                await tx
+                    .update(workspaceInvites)
+                    .set({ uses: sql`${workspaceInvites.uses} + 1` })
+                    .where(eq(workspaceInvites.id, row.invite.id));
+            }
+            return { workspace: row.workspace, joined };
+        });
+    }
+
     async revokeInvite(workspaceId: string, inviteId: string): Promise<boolean> {
         const rows = await db
             .update(workspaceInvites)
@@ -313,6 +409,8 @@ export class DatabaseStorage implements IStorage {
                 and(
                     eq(workspaceInvites.id, inviteId),
                     eq(workspaceInvites.workspaceId, workspaceId),
+                    // Una seconda revoca non sovrascrive l'ora della prima.
+                    isNull(workspaceInvites.revokedAt),
                 ),
             )
             .returning({ id: workspaceInvites.id });

@@ -31,7 +31,9 @@ app.use((req, res, next) => {
 
     res.on("finish", () => {
         if (path.startsWith("/api")) {
-            log(`${req.method} ${path} ${res.statusCode} in ${Date.now() - start}ms`);
+            // Il token degli inviti è una credenziale: nei log resta solo il segnaposto.
+            const safePath = path.replace(/^\/api\/invites\/[^/]+/, "/api/invites/:token");
+            log(`${req.method} ${safePath} ${res.statusCode} in ${Date.now() - start}ms`);
         }
     });
 

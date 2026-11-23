@@ -156,10 +156,10 @@ export const workspaceInvites = pgTable(
         createdById: varchar("created_by_id", { length: 36 })
             .notNull()
             .references(() => users.id, { onDelete: "cascade" }),
-        expiresAt: timestamp("expires_at").notNull(),
-        revokedAt: timestamp("revoked_at"),
+        expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+        revokedAt: timestamp("revoked_at", { withTimezone: true }),
         uses: integer("uses").default(0).notNull(),
-        createdAt: timestamp("created_at").defaultNow().notNull(),
+        createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     },
     (t) => [
         uniqueIndex("workspace_invites_token_hash_idx").on(t.tokenHash),
@@ -257,7 +257,10 @@ export const registerSchema = z.object({
 // Types
 export type User = typeof users.$inferSelect;
 /** Utente senza hash della password: l'unica forma che lascia il server. */
-export type PublicUser = Omit<User, "password">;
+/** Utente come lo vedono gli altri: niente hash e niente email. */
+export type PublicUser = Omit<User, "password" | "email">;
+/** Utente come lo vede sé stesso: con l'email, mai con l'hash. */
+export type SelfUser = Omit<User, "password">;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type Workspace = typeof workspaces.$inferSelect;
 export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;

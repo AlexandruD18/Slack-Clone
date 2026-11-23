@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { storage, toPublicUser, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "./storage";
+import { storage, toSelfUser, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "./storage";
 import { config } from "./config";
 import { hash, hashSync, compare } from "bcrypt";
 import { createHash, randomBytes, randomUUID } from "crypto";
@@ -298,7 +298,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
             const token = signToken(user);
 
-            res.json({ token, user: toPublicUser(user) });
+            res.json({ token, user: toSelfUser(user) });
         } catch (error) {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: error.errors[0].message });
@@ -310,7 +310,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     app.get("/api/auth/me", authenticateToken, async (req: AuthenticatedRequest, res) => {
         try {
-            const user = await storage.getUser(req.user!.id);
+            const user = await storage.getSelf(req.user!.id);
             if (!user) {
                 return res.status(404).json({ message: "User not found" });
             }
@@ -604,6 +604,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         },
     );
 
+    app.get(
+        "/api/workspaces/:workspaceId/invites",
+        authenticateToken,
+        async (req: AuthenticatedRequest, res) => {
+            try {
+                const role = await storage.getWorkspaceRole(req.params.workspaceId, req.user!.id);
+                if (!role || !canManageWorkspace(role)) {
+                    return res.status(404).json({ message: "Workspace not found" });
+                }
+                res.json(await storage.listActiveInvites(req.params.workspaceId));
+            } catch (error) {
+                console.error("List invites error:", error);
+                res.status(500).json({ message: "Failed to list invites" });
+            }
+        },
+    );
+
     app.delete(
         "/api/workspaces/:workspaceId/invites/:inviteId",
         authenticateToken,
@@ -650,24 +667,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         authenticateToken,
         async (req: AuthenticatedRequest, res) => {
             try {
-                const found = await storage.getValidInvite(hashInviteToken(req.params.token));
+                const found = await storage.acceptInvite(
+                    hashInviteToken(req.params.token),
+                    req.user!.id,
+                );
                 if (!found) {
                     return res
                         .status(404)
                         .json({ message: "This invite is invalid or has expired" });
                 }
-
-                const joined = await storage.joinWorkspace(found.workspace.id, req.user!.id);
-                if (joined) {
-                    await storage.countInviteUse(found.invite.id);
-                    const user = await storage.getUser(req.user!.id);
-                    await broadcastToWorkspaceMembers(
-                        found.workspace.id,
-                        "member:joined",
-                        { workspaceId: found.workspace.id, user },
-                        req.user!.id,
-                    );
+                if (!found.joined) {
+                    return res.json(found.workspace);
                 }
+
+                const user = await storage.getUser(req.user!.id);
+                await broadcastToWorkspaceMembers(
+                    found.workspace.id,
+                    "member:joined",
+                    { workspaceId: found.workspace.id, user },
+                    req.user!.id,
+                );
                 res.json(found.workspace);
             } catch (error) {
                 console.error("Accept invite error:", error);

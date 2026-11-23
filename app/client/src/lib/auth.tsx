@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useState, useEffect, type ReactNode } from "react";
-import type { PublicUser as User } from "@shared/schema";
+import type { SelfUser as User } from "@shared/schema";
 import { AUTH_EXPIRED_EVENT, queryClient } from "./queryClient";
 
 interface AuthContextType {

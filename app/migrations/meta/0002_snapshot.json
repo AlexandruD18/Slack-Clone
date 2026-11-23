@@ -1,5 +1,5 @@
 {
-  "id": "84e63a90-b06b-4d2b-976a-2724e78ee519",
+  "id": "ea60b3d6-77af-4920-b6a0-9bb2c4a1fd08",
   "prevId": "748dff1a-b8ea-4636-81b4-c2af437017df",
   "version": "7",
   "dialect": "postgresql",
@@ -529,13 +529,13 @@
         },
         "expires_at": {
           "name": "expires_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
         },
         "revoked_at": {
           "name": "revoked_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -548,7 +548,7 @@
         },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
