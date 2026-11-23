@@ -6,8 +6,10 @@ import {
     channelMembers,
     messages,
     directMessages,
+    workspaceInvites,
     type User,
     type PublicUser,
+    type SelfUser,
     type InsertUser,
     type Workspace,
     type InsertWorkspace,
@@ -15,7 +17,6 @@ import {
     type InsertWorkspaceMember,
     type Channel,
     type InsertChannel,
-    type ChannelMember,
     type InsertChannelMember,
     type Message,
     type InsertMessage,
@@ -23,10 +24,12 @@ import {
     type InsertDirectMessage,
     type MessageWithSender,
     type DirectMessageWithUsers,
+    type WorkspaceInvite,
+    type WorkspaceMemberWithUser,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, asc, desc, inArray, sql, type SQL } from "drizzle-orm";
-import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
+import { eq, and, or, asc, desc, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { alias, type PgColumn, type PgTable } from "drizzle-orm/pg-core";
 
 /** Pagina di messaggi: gli ultimi `limit` prima del messaggio `before` (escluso). */
 export interface PageOptions {
@@ -59,7 +62,6 @@ function olderThan(
  */
 export const publicUserColumns = {
     id: users.id,
-    email: users.email,
     name: users.name,
     avatar: users.avatar,
     status: users.status,
@@ -68,22 +70,34 @@ export const publicUserColumns = {
     createdAt: users.createdAt,
 };
 
-export function toPublicUser(user: User): PublicUser {
+/** Come publicUserColumns più l'email: solo per l'utente stesso. */
+export const selfUserColumns = { ...publicUserColumns, email: users.email };
+
+export function toSelfUser(user: User): SelfUser {
     const { password, ...rest } = user;
     return rest;
+}
+
+export interface ActiveInvite {
+    id: string;
+    createdAt: Date;
+    expiresAt: Date;
+    uses: number;
+    createdByName: string;
 }
 
 export interface IStorage {
     // Utenti
     getUser(id: string): Promise<PublicUser | undefined>;
+    getSelf(id: string): Promise<SelfUser | undefined>;
     /** Unico metodo che restituisce l'hash della password: serve solo al login. */
     getUserWithPasswordByEmail(email: string): Promise<User | undefined>;
     emailExists(email: string): Promise<boolean>;
-    createUser(user: InsertUser): Promise<PublicUser>;
+    createUser(user: InsertUser): Promise<SelfUser>;
     updateUser(
         id: string,
         data: Partial<Pick<User, "name" | "avatar" | "statusMessage">>,
-    ): Promise<PublicUser | undefined>;
+    ): Promise<SelfUser | undefined>;
 
     // Workspace
     getWorkspace(id: string): Promise<Workspace | undefined>;
@@ -91,10 +105,31 @@ export interface IStorage {
     createWorkspace(workspace: InsertWorkspace): Promise<Workspace>;
 
     // Membri dei workspace
-    getWorkspaceMembers(workspaceId: string): Promise<{ user: PublicUser }[]>;
+    getWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberWithUser[]>;
     getWorkspaceMemberIds(workspaceId: string): Promise<string[]>;
     addWorkspaceMember(member: InsertWorkspaceMember): Promise<WorkspaceMember>;
     isWorkspaceMember(workspaceId: string, userId: string): Promise<boolean>;
+    getWorkspaceRole(workspaceId: string, userId: string): Promise<string | undefined>;
+    shareWorkspace(userId1: string, userId2: string): Promise<boolean>;
+    joinWorkspace(workspaceId: string, userId: string): Promise<boolean>;
+
+    // Inviti
+    createInvite(invite: {
+        workspaceId: string;
+        tokenHash: string;
+        createdById: string;
+        expiresAt: Date;
+    }): Promise<WorkspaceInvite>;
+    getValidInvite(
+        tokenHash: string,
+    ): Promise<{ invite: WorkspaceInvite; workspace: Workspace } | undefined>;
+    countInviteUse(inviteId: string): Promise<void>;
+    listActiveInvites(workspaceId: string): Promise<ActiveInvite[]>;
+    acceptInvite(
+        tokenHash: string,
+        userId: string,
+    ): Promise<{ workspace: Workspace; joined: boolean } | undefined>;
+    revokeInvite(workspaceId: string, inviteId: string): Promise<boolean>;
 
     // Canali
     getChannel(id: string): Promise<Channel | undefined>;
@@ -102,9 +137,10 @@ export interface IStorage {
     createChannel(channel: InsertChannel): Promise<Channel>;
 
     // Membri dei canali
-    addChannelMember(member: InsertChannelMember): Promise<ChannelMember>;
+    addChannelMember(member: InsertChannelMember): Promise<void>;
     isChannelMember(channelId: string, userId: string): Promise<boolean>;
     getChannelMemberIds(channelId: string): Promise<string[]>;
+    getChannelMembers(channelId: string): Promise<PublicUser[]>;
 
     // Messaggi
     getMessages(channelId: string, page?: PageOptions): Promise<MessageWithSender[]>;
@@ -143,6 +179,11 @@ export class DatabaseStorage implements IStorage {
         return user;
     }
 
+    async getSelf(id: string): Promise<SelfUser | undefined> {
+        const [user] = await db.select(selfUserColumns).from(users).where(eq(users.id, id));
+        return user;
+    }
+
     async getUserWithPasswordByEmail(email: string): Promise<User | undefined> {
         const [user] = await db.select().from(users).where(eq(users.email, email));
         return user;
@@ -153,20 +194,20 @@ export class DatabaseStorage implements IStorage {
         return !!row;
     }
 
-    async createUser(insertUser: InsertUser): Promise<PublicUser> {
-        const [user] = await db.insert(users).values(insertUser).returning(publicUserColumns);
+    async createUser(insertUser: InsertUser): Promise<SelfUser> {
+        const [user] = await db.insert(users).values(insertUser).returning(selfUserColumns);
         return user;
     }
 
     async updateUser(
         id: string,
         data: Partial<Pick<User, "name" | "avatar" | "statusMessage">>,
-    ): Promise<PublicUser | undefined> {
+    ): Promise<SelfUser | undefined> {
         const [user] = await db
             .update(users)
             .set(data)
             .where(eq(users.id, id))
-            .returning(publicUserColumns);
+            .returning(selfUserColumns);
         return user;
     }
 
@@ -191,12 +232,189 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Membri dei workspace
-    async getWorkspaceMembers(workspaceId: string): Promise<{ user: PublicUser }[]> {
+    async getWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberWithUser[]> {
         return db
-            .select({ user: publicUserColumns })
+            .select({ user: publicUserColumns, role: workspaceMembers.role })
             .from(workspaceMembers)
             .innerJoin(users, eq(workspaceMembers.userId, users.id))
-            .where(eq(workspaceMembers.workspaceId, workspaceId));
+            .where(eq(workspaceMembers.workspaceId, workspaceId))
+            .orderBy(asc(users.name));
+    }
+
+    async getWorkspaceRole(workspaceId: string, userId: string): Promise<string | undefined> {
+        const [row] = await db
+            .select({ role: workspaceMembers.role })
+            .from(workspaceMembers)
+            .where(
+                and(
+                    eq(workspaceMembers.workspaceId, workspaceId),
+                    eq(workspaceMembers.userId, userId),
+                ),
+            );
+        return row?.role;
+    }
+
+    /** Vero se i due utenti hanno almeno un workspace in comune. */
+    async shareWorkspace(userId1: string, userId2: string): Promise<boolean> {
+        const other = alias(workspaceMembers, "other");
+        const [row] = await db
+            .select({ id: workspaceMembers.id })
+            .from(workspaceMembers)
+            .innerJoin(other, eq(other.workspaceId, workspaceMembers.workspaceId))
+            .where(and(eq(workspaceMembers.userId, userId1), eq(other.userId, userId2)))
+            .limit(1);
+        return !!row;
+    }
+
+    /**
+     * Aggiunge l'utente al workspace e al canale #general, in una transazione.
+     * Restituisce false se era già membro.
+     */
+    async joinWorkspace(workspaceId: string, userId: string): Promise<boolean> {
+        return db.transaction(async (tx) => {
+            const inserted = await tx
+                .insert(workspaceMembers)
+                .values({ workspaceId, userId, role: "member" })
+                .onConflictDoNothing()
+                .returning({ id: workspaceMembers.id });
+            if (inserted.length === 0) return false;
+
+            const [general] = await tx
+                .select({ id: channels.id })
+                .from(channels)
+                .where(and(eq(channels.workspaceId, workspaceId), eq(channels.name, "general")));
+            if (general) {
+                await tx
+                    .insert(channelMembers)
+                    .values({ channelId: general.id, userId })
+                    .onConflictDoNothing();
+            }
+            return true;
+        });
+    }
+
+    // Inviti
+    async createInvite(invite: {
+        workspaceId: string;
+        tokenHash: string;
+        createdById: string;
+        expiresAt: Date;
+    }): Promise<WorkspaceInvite> {
+        const [row] = await db.insert(workspaceInvites).values(invite).returning();
+        return row;
+    }
+
+    /** Invito esistente, non revocato e non scaduto, con il suo workspace. */
+    async getValidInvite(tokenHash: string) {
+        const [row] = await db
+            .select({ invite: workspaceInvites, workspace: workspaces })
+            .from(workspaceInvites)
+            .innerJoin(workspaces, eq(workspaceInvites.workspaceId, workspaces.id))
+            .where(
+                and(
+                    eq(workspaceInvites.tokenHash, tokenHash),
+                    isNull(workspaceInvites.revokedAt),
+                    gt(workspaceInvites.expiresAt, sql`now()`),
+                ),
+            );
+        return row;
+    }
+
+    async countInviteUse(inviteId: string): Promise<void> {
+        await db
+            .update(workspaceInvites)
+            .set({ uses: sql`${workspaceInvites.uses} + 1` })
+            .where(eq(workspaceInvites.id, inviteId));
+    }
+
+    /** Inviti non revocati e non scaduti, senza hash: per l'elenco nel dialog. */
+    async listActiveInvites(workspaceId: string): Promise<ActiveInvite[]> {
+        return db
+            .select({
+                id: workspaceInvites.id,
+                createdAt: workspaceInvites.createdAt,
+                expiresAt: workspaceInvites.expiresAt,
+                uses: workspaceInvites.uses,
+                createdByName: users.name,
+            })
+            .from(workspaceInvites)
+            .innerJoin(users, eq(workspaceInvites.createdById, users.id))
+            .where(
+                and(
+                    eq(workspaceInvites.workspaceId, workspaceId),
+                    isNull(workspaceInvites.revokedAt),
+                    gt(workspaceInvites.expiresAt, sql`now()`),
+                ),
+            )
+            .orderBy(desc(workspaceInvites.createdAt));
+    }
+
+    /**
+     * Valida e usa l'invito nella stessa transazione. FOR UPDATE blocca la riga:
+     * una revoca concorrente aspetta, oppure l'accettazione vede l'invito già revocato.
+     */
+    async acceptInvite(tokenHash: string, userId: string) {
+        return db.transaction(async (tx) => {
+            const [row] = await tx
+                .select({ invite: workspaceInvites, workspace: workspaces })
+                .from(workspaceInvites)
+                .innerJoin(workspaces, eq(workspaceInvites.workspaceId, workspaces.id))
+                .where(
+                    and(
+                        eq(workspaceInvites.tokenHash, tokenHash),
+                        isNull(workspaceInvites.revokedAt),
+                        gt(workspaceInvites.expiresAt, sql`now()`),
+                    ),
+                )
+                .for("update", { of: workspaceInvites });
+            if (!row) return undefined;
+
+            const inserted = await tx
+                .insert(workspaceMembers)
+                .values({ workspaceId: row.workspace.id, userId, role: "member" })
+                .onConflictDoNothing()
+                .returning({ id: workspaceMembers.id });
+            const joined = inserted.length > 0;
+
+            if (joined) {
+                const [general] = await tx
+                    .select({ id: channels.id })
+                    .from(channels)
+                    .where(
+                        and(
+                            eq(channels.workspaceId, row.workspace.id),
+                            eq(channels.name, "general"),
+                        ),
+                    );
+                if (general) {
+                    await tx
+                        .insert(channelMembers)
+                        .values({ channelId: general.id, userId })
+                        .onConflictDoNothing();
+                }
+                await tx
+                    .update(workspaceInvites)
+                    .set({ uses: sql`${workspaceInvites.uses} + 1` })
+                    .where(eq(workspaceInvites.id, row.invite.id));
+            }
+            return { workspace: row.workspace, joined };
+        });
+    }
+
+    async revokeInvite(workspaceId: string, inviteId: string): Promise<boolean> {
+        const rows = await db
+            .update(workspaceInvites)
+            .set({ revokedAt: sql`now()` })
+            .where(
+                and(
+                    eq(workspaceInvites.id, inviteId),
+                    eq(workspaceInvites.workspaceId, workspaceId),
+                    // Una seconda revoca non sovrascrive l'ora della prima.
+                    isNull(workspaceInvites.revokedAt),
+                ),
+            )
+            .returning({ id: workspaceInvites.id });
+        return rows.length > 0;
     }
 
     async getWorkspaceMemberIds(workspaceId: string): Promise<string[]> {
@@ -256,9 +474,18 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Membri dei canali
-    async addChannelMember(member: InsertChannelMember): Promise<ChannelMember> {
-        const [channelMember] = await db.insert(channelMembers).values(member).returning();
-        return channelMember;
+    /** Idempotente: aggiungere un membro già presente non fa nulla. */
+    async addChannelMember(member: InsertChannelMember): Promise<void> {
+        await db.insert(channelMembers).values(member).onConflictDoNothing();
+    }
+
+    async getChannelMembers(channelId: string): Promise<PublicUser[]> {
+        return db
+            .select(publicUserColumns)
+            .from(channelMembers)
+            .innerJoin(users, eq(channelMembers.userId, users.id))
+            .where(eq(channelMembers.channelId, channelId))
+            .orderBy(asc(users.name));
     }
 
     async isChannelMember(channelId: string, userId: string): Promise<boolean> {

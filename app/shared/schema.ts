@@ -6,6 +6,7 @@ import {
     timestamp,
     boolean,
     index,
+    integer,
     uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
@@ -138,6 +139,34 @@ export const directMessages = pgTable(
     ],
 );
 
+/**
+ * Link di invito a un workspace. Nel database c'è solo l'hash SHA-256 del token:
+ * chi legge la tabella non può usare gli inviti.
+ */
+export const workspaceInvites = pgTable(
+    "workspace_invites",
+    {
+        id: varchar("id", { length: 36 })
+            .primaryKey()
+            .default(sql`gen_random_uuid()`),
+        workspaceId: varchar("workspace_id", { length: 36 })
+            .notNull()
+            .references(() => workspaces.id, { onDelete: "cascade" }),
+        tokenHash: text("token_hash").notNull(),
+        createdById: varchar("created_by_id", { length: 36 })
+            .notNull()
+            .references(() => users.id, { onDelete: "cascade" }),
+        expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+        revokedAt: timestamp("revoked_at", { withTimezone: true }),
+        uses: integer("uses").default(0).notNull(),
+        createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    },
+    (t) => [
+        uniqueIndex("workspace_invites_token_hash_idx").on(t.tokenHash),
+        index("workspace_invites_workspace_idx").on(t.workspaceId),
+    ],
+);
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
     workspacesOwned: many(workspaces),
@@ -228,7 +257,10 @@ export const registerSchema = z.object({
 // Types
 export type User = typeof users.$inferSelect;
 /** Utente senza hash della password: l'unica forma che lascia il server. */
-export type PublicUser = Omit<User, "password">;
+/** Utente come lo vedono gli altri: niente hash e niente email. */
+export type PublicUser = Omit<User, "password" | "email">;
+/** Utente come lo vede sé stesso: con l'email, mai con l'hash. */
+export type SelfUser = Omit<User, "password">;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type Workspace = typeof workspaces.$inferSelect;
 export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;
@@ -242,6 +274,10 @@ export type Message = typeof messages.$inferSelect;
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type DirectMessage = typeof directMessages.$inferSelect;
 export type InsertDirectMessage = z.infer<typeof insertDirectMessageSchema>;
+export type WorkspaceInvite = typeof workspaceInvites.$inferSelect;
+export type WorkspaceRole = "owner" | "admin" | "member";
+/** Membro di un workspace come lo vede il client. */
+export type WorkspaceMemberWithUser = { user: PublicUser; role: string };
 export type LoginInput = z.infer<typeof loginSchema>;
 export type RegisterInput = z.infer<typeof registerSchema>;
 

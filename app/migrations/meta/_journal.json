@@ -15,6 +15,13 @@
       "when": 1795472842951,
       "tag": "0001_indici-e-presenza",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795474066843,
+      "tag": "0002_inviti",
+      "breakpoints": true
     }
   ]
 }
