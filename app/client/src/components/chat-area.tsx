@@ -26,7 +26,7 @@ export function ChatArea({ channel }: ChatAreaProps) {
     const { user } = useAuth();
     const { sendMessage: sendSocketMessage, subscribe } = useSocket();
 
-    const { messages, isLoading, hasOlder, isLoadingOlder, loadOlder } =
+    const { messages, isLoading, hasOlder, isLoadingOlder, loadOlderFailed, loadOlder } =
         useMessageHistory<MessageWithSender>(
             ["/api/channels", channel.id, "messages"],
             `/api/channels/${channel.id}/messages`,
@@ -147,7 +147,11 @@ export function ChatArea({ channel }: ChatAreaProps) {
                                 onClick={loadOlder}
                                 disabled={isLoadingOlder}
                             >
-                                {isLoadingOlder ? "Caricamento…" : "Carica messaggi precedenti"}
+                                {isLoadingOlder
+                                    ? "Caricamento…"
+                                    : loadOlderFailed
+                                      ? "Non riuscito, riprova"
+                                      : "Carica messaggi precedenti"}
                             </Button>
                         </div>
                     )}

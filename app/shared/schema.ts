@@ -114,7 +114,7 @@ export const messages = pgTable(
         content: text("content").notNull(),
         createdAt: timestamp("created_at").defaultNow().notNull(),
     },
-    (t) => [index("messages_channel_created_idx").on(t.channelId, t.createdAt)],
+    (t) => [index("messages_channel_created_idx").on(t.channelId, t.createdAt, t.id)],
 );
 
 export const directMessages = pgTable(
@@ -133,9 +133,13 @@ export const directMessages = pgTable(
         createdAt: timestamp("created_at").defaultNow().notNull(),
     },
     (t) => [
-        // Una conversazione si legge in entrambe le direzioni: un indice per verso.
-        index("direct_messages_pair_created_idx").on(t.senderId, t.receiverId, t.createdAt),
-        index("direct_messages_receiver_idx").on(t.receiverId, t.senderId, t.createdAt),
+        // Le due direzioni della conversazione usano lo stesso indice (BitmapOr).
+        index("direct_messages_pair_created_idx").on(
+            t.senderId,
+            t.receiverId,
+            t.createdAt,
+            t.id,
+        ),
     ],
 );
 

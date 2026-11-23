@@ -4,6 +4,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { pool } from "./db";
+import { storage } from "./storage";
 
 type HttpError = Error & { status?: number; statusCode?: number };
 
@@ -74,6 +75,8 @@ app.get("/api/health", async (_req, res) => {
                 : err.message || "Internal Server Error";
         res.status(status).json({ message });
     });
+
+    await storage.resetPresence();
 
     httpServer.listen({ port: config.PORT, host: "0.0.0.0" }, () => {
         log(`serving on port ${config.PORT}`);

@@ -57,7 +57,10 @@ export function useMessageHistory<T extends HistoryMessage>(
     const loadOlder = useCallback(() => {
         const container = scrollContainerRef.current;
         heightBeforeLoad.current = container ? container.scrollHeight : null;
-        void query.fetchNextPage();
+        void query.fetchNextPage().then((result) => {
+            // Se il caricamento fallisce non c'è niente da compensare.
+            if (result.isFetchNextPageError) heightBeforeLoad.current = null;
+        });
     }, [query, scrollContainerRef]);
 
     const newestId = messages?.[messages.length - 1]?.id;
@@ -83,6 +86,7 @@ export function useMessageHistory<T extends HistoryMessage>(
         isError: query.isError,
         hasOlder: query.hasNextPage,
         isLoadingOlder: query.isFetchingNextPage,
+        loadOlderFailed: query.isFetchNextPageError,
         loadOlder,
     };
 }

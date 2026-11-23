@@ -1,5 +1,5 @@
 {
-  "id": "198fdd55-2c4b-4848-b5c9-58b309ff4ef6",
+  "id": "748dff1a-b8ea-4636-81b4-c2af437017df",
   "prevId": "c0395ee2-e24f-468c-8082-f5fa232aa5da",
   "version": "7",
   "dialect": "postgresql",
@@ -272,30 +272,9 @@
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "direct_messages_receiver_idx": {
-          "name": "direct_messages_receiver_idx",
-          "columns": [
-            {
-              "expression": "receiver_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
             },
             {
-              "expression": "sender_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -390,6 +369,12 @@
             },
             {
               "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

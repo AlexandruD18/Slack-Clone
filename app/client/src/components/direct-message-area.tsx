@@ -26,7 +26,7 @@ export function DirectMessageArea({ user: otherUser }: DirectMessageAreaProps) {
     const { user } = useAuth();
     const { sendMessage: sendSocketMessage, subscribe } = useSocket();
 
-    const { messages, isLoading, hasOlder, isLoadingOlder, loadOlder } =
+    const { messages, isLoading, hasOlder, isLoadingOlder, loadOlderFailed, loadOlder } =
         useMessageHistory<DirectMessageWithUsers>(
             ["/api/dm", otherUser.id],
             `/api/dm/${otherUser.id}`,
@@ -146,7 +146,11 @@ export function DirectMessageArea({ user: otherUser }: DirectMessageAreaProps) {
                                 onClick={loadOlder}
                                 disabled={isLoadingOlder}
                             >
-                                {isLoadingOlder ? "Caricamento…" : "Carica messaggi precedenti"}
+                                {isLoadingOlder
+                                    ? "Caricamento…"
+                                    : loadOlderFailed
+                                      ? "Non riuscito, riprova"
+                                      : "Carica messaggi precedenti"}
                             </Button>
                         </div>
                     )}

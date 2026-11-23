@@ -25,29 +25,32 @@ import {
     type DirectMessageWithUsers,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, asc, desc, inArray, lt, sql, type SQL } from "drizzle-orm";
-import type { PgColumn } from "drizzle-orm/pg-core";
+import { eq, and, or, asc, desc, inArray, sql, type SQL } from "drizzle-orm";
+import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 
 /** Pagina di messaggi: gli ultimi `limit` prima del messaggio `before` (escluso). */
 export interface PageOptions {
-    before?: { id: string; createdAt: Date };
+    /** Id di un messaggio già validato con get*Cursor. */
+    before?: string;
     limit?: number;
 }
 
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 100;
 
-/** Condizione keyset su (created_at, id): stabile anche con più messaggi nello stesso istante. */
+/**
+ * Condizione keyset su (created_at, id), stabile anche con più messaggi nello stesso istante.
+ * Il timestamp del cursore resta nel database: passando da un Date di JavaScript
+ * si perderebbero i microsecondi e con loro i messaggi dello stesso millisecondo.
+ */
 function olderThan(
+    table: PgTable,
     createdAt: PgColumn,
     id: PgColumn,
-    before: PageOptions["before"],
+    beforeId: string | undefined,
 ): SQL | undefined {
-    if (!before) return undefined;
-    return or(
-        lt(createdAt, before.createdAt),
-        and(eq(createdAt, before.createdAt), lt(id, before.id)),
-    );
+    if (!beforeId) return undefined;
+    return sql`(${createdAt}, ${id}) < (select cur.created_at, cur.id from ${table} as cur where cur.id = ${beforeId})`;
 }
 
 /**
@@ -105,7 +108,7 @@ export interface IStorage {
 
     // Messaggi
     getMessages(channelId: string, page?: PageOptions): Promise<MessageWithSender[]>;
-    getMessageCursor(channelId: string, messageId: string): Promise<PageOptions["before"]>;
+    getMessageCursor(channelId: string, messageId: string): Promise<string | undefined>;
     createMessage(message: InsertMessage): Promise<Message>;
 
     // Messaggi diretti
@@ -118,11 +121,12 @@ export interface IStorage {
         userId1: string,
         userId2: string,
         messageId: string,
-    ): Promise<PageOptions["before"]>;
+    ): Promise<string | undefined>;
     createDirectMessage(message: InsertDirectMessage): Promise<DirectMessage>;
 
     // Presenza
     updatePresence(userId: string, status: string): Promise<void>;
+    resetPresence(): Promise<void>;
 }
 
 function conversation(userId1: string, userId2: string) {
@@ -289,7 +293,7 @@ export class DatabaseStorage implements IStorage {
             .where(
                 and(
                     eq(messages.channelId, channelId),
-                    olderThan(messages.createdAt, messages.id, page.before),
+                    olderThan(messages, messages.createdAt, messages.id, page.before),
                 ),
             )
             .orderBy(desc(messages.createdAt), desc(messages.id))
@@ -300,10 +304,10 @@ export class DatabaseStorage implements IStorage {
 
     async getMessageCursor(channelId: string, messageId: string) {
         const [row] = await db
-            .select({ id: messages.id, createdAt: messages.createdAt })
+            .select({ id: messages.id })
             .from(messages)
             .where(and(eq(messages.id, messageId), eq(messages.channelId, channelId)));
-        return row;
+        return row?.id;
     }
 
     async createMessage(insertMessage: InsertMessage): Promise<Message> {
@@ -323,7 +327,12 @@ export class DatabaseStorage implements IStorage {
             .where(
                 and(
                     conversation(userId1, userId2),
-                    olderThan(directMessages.createdAt, directMessages.id, page.before),
+                    olderThan(
+                        directMessages,
+                        directMessages.createdAt,
+                        directMessages.id,
+                        page.before,
+                    ),
                 ),
             )
             .orderBy(desc(directMessages.createdAt), desc(directMessages.id))
@@ -347,10 +356,10 @@ export class DatabaseStorage implements IStorage {
 
     async getDirectMessageCursor(userId1: string, userId2: string, messageId: string) {
         const [row] = await db
-            .select({ id: directMessages.id, createdAt: directMessages.createdAt })
+            .select({ id: directMessages.id })
             .from(directMessages)
             .where(and(eq(directMessages.id, messageId), conversation(userId1, userId2)));
-        return row;
+        return row?.id;
     }
 
     async createDirectMessage(insertMessage: InsertDirectMessage): Promise<DirectMessage> {
@@ -359,6 +368,14 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Presenza
+    /**
+     * All'avvio nessuno è connesso: dopo un crash gli stati "online" sarebbero falsi.
+     * Vale finché il server gira su una sola istanza.
+     */
+    async resetPresence(): Promise<void> {
+        await db.update(users).set({ status: "offline" }).where(eq(users.status, "online"));
+    }
+
     async updatePresence(userId: string, status: string): Promise<void> {
         await db
             .update(users)
