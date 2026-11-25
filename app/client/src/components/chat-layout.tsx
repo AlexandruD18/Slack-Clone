@@ -96,6 +96,7 @@ export function ChatLayout() {
                             className="lg:hidden"
                             onClick={() => setMobileMenuOpen(true)}
                             data-testid="button-mobile-menu"
+                            aria-label="Apri il menu"
                         >
                             <Menu className="w-5 h-5" />
                         </Button>
@@ -105,6 +106,10 @@ export function ChatLayout() {
                             className="hidden lg:flex"
                             onClick={() => setSidebarOpen(!sidebarOpen)}
                             data-testid="button-toggle-sidebar"
+                            aria-label={
+                                sidebarOpen ? "Chiudi la barra laterale" : "Apri la barra laterale"
+                            }
+                            aria-expanded={sidebarOpen}
                         >
                             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
                         </Button>

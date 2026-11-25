@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { z } from "zod";
+import type { z } from "zod";
+import { channelSchema } from "@shared/validation";
 import {
     Hash,
     Lock,
@@ -53,13 +54,8 @@ import { cn } from "@/lib/utils";
 import type { Channel, PublicUser as User, WorkspaceMemberWithUser } from "@shared/schema";
 import { InviteDialog } from "@/components/invite-dialog";
 
-const createChannelSchema = z.object({
-    name: z.string().min(2, "Channel name must be at least 2 characters").max(50),
-    description: z.string().max(200).optional(),
-    isPrivate: z.boolean().default(false),
-});
-
-type CreateChannelInput = z.infer<typeof createChannelSchema>;
+type ChannelInput = z.input<typeof channelSchema>;
+type ChannelOutput = z.output<typeof channelSchema>;
 
 interface ChatSidebarProps {
     channels: Channel[];
@@ -90,14 +86,14 @@ export function ChatSidebar({
         enabled: !!currentWorkspace,
     });
 
-    const form = useForm<CreateChannelInput>({
-        resolver: zodResolver(createChannelSchema),
+    const form = useForm<ChannelInput, unknown, ChannelOutput>({
+        resolver: zodResolver(channelSchema),
         defaultValues: { name: "", description: "", isPrivate: false },
     });
 
     const createChannelMutation = useMutation({
-        mutationFn: async (data: CreateChannelInput) => {
-            const response = await apiRequest(
+        mutationFn: async (data: ChannelOutput) => {
+            const response = await apiRequest<Channel>(
                 "POST",
                 `/api/workspaces/${currentWorkspace?.id}/channels`,
                 data,
@@ -122,7 +118,7 @@ export function ChatSidebar({
         },
     });
 
-    const onSubmit = (data: CreateChannelInput) => {
+    const onSubmit = (data: ChannelOutput) => {
         createChannelMutation.mutate(data);
     };
 
@@ -211,7 +207,10 @@ export function ChatSidebar({
                     <Collapsible open={channelsOpen} onOpenChange={setChannelsOpen}>
                         <div className="flex items-center gap-1 px-2 py-1">
                             <CollapsibleTrigger asChild>
-                                <button className="hover-elevate rounded p-1 -m-1">
+                                <button
+                                    className="hover-elevate rounded p-1 -m-1"
+                                    aria-label={channelsOpen ? "Comprimi canali" : "Espandi canali"}
+                                >
                                     {channelsOpen ? (
                                         <ChevronDown className="w-4 h-4" />
                                     ) : (
@@ -229,6 +228,7 @@ export function ChatSidebar({
                                         size="icon"
                                         className="w-6 h-6"
                                         data-testid="button-add-channel"
+                                        aria-label="Crea un canale"
                                     >
                                         <Plus className="w-4 h-4" />
                                     </Button>
@@ -274,6 +274,7 @@ export function ChatSidebar({
                                                         <FormControl>
                                                             <Input
                                                                 {...field}
+                                                                value={field.value ?? ""}
                                                                 placeholder="What's this channel about?"
                                                                 data-testid="input-channel-description"
                                                             />
@@ -362,7 +363,14 @@ export function ChatSidebar({
                     <Collapsible open={dmsOpen} onOpenChange={setDmsOpen} className="mt-4">
                         <div className="flex items-center gap-1 px-2 py-1">
                             <CollapsibleTrigger asChild>
-                                <button className="hover-elevate rounded p-1 -m-1">
+                                <button
+                                    className="hover-elevate rounded p-1 -m-1"
+                                    aria-label={
+                                        dmsOpen
+                                            ? "Comprimi messaggi diretti"
+                                            : "Espandi messaggi diretti"
+                                    }
+                                >
                                     {dmsOpen ? (
                                         <ChevronDown className="w-4 h-4" />
                                     ) : (

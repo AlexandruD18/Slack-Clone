@@ -12,9 +12,6 @@ import {
     type SelfUser,
     type InsertUser,
     type Workspace,
-    type InsertWorkspace,
-    type WorkspaceMember,
-    type InsertWorkspaceMember,
     type Channel,
     type InsertChannel,
     type InsertChannelMember,
@@ -86,85 +83,6 @@ export interface ActiveInvite {
     createdByName: string;
 }
 
-export interface IStorage {
-    // Utenti
-    getUser(id: string): Promise<PublicUser | undefined>;
-    getSelf(id: string): Promise<SelfUser | undefined>;
-    /** Unico metodo che restituisce l'hash della password: serve solo al login. */
-    getUserWithPasswordByEmail(email: string): Promise<User | undefined>;
-    emailExists(email: string): Promise<boolean>;
-    createUser(user: InsertUser): Promise<SelfUser>;
-    updateUser(
-        id: string,
-        data: Partial<Pick<User, "name" | "avatar" | "statusMessage">>,
-    ): Promise<SelfUser | undefined>;
-
-    // Workspace
-    getWorkspace(id: string): Promise<Workspace | undefined>;
-    getWorkspacesByUser(userId: string): Promise<Workspace[]>;
-    createWorkspace(workspace: InsertWorkspace): Promise<Workspace>;
-
-    // Membri dei workspace
-    getWorkspaceMembers(workspaceId: string): Promise<WorkspaceMemberWithUser[]>;
-    getWorkspaceMemberIds(workspaceId: string): Promise<string[]>;
-    addWorkspaceMember(member: InsertWorkspaceMember): Promise<WorkspaceMember>;
-    isWorkspaceMember(workspaceId: string, userId: string): Promise<boolean>;
-    getWorkspaceRole(workspaceId: string, userId: string): Promise<string | undefined>;
-    shareWorkspace(userId1: string, userId2: string): Promise<boolean>;
-    joinWorkspace(workspaceId: string, userId: string): Promise<boolean>;
-
-    // Inviti
-    createInvite(invite: {
-        workspaceId: string;
-        tokenHash: string;
-        createdById: string;
-        expiresAt: Date;
-    }): Promise<WorkspaceInvite>;
-    getValidInvite(
-        tokenHash: string,
-    ): Promise<{ invite: WorkspaceInvite; workspace: Workspace } | undefined>;
-    countInviteUse(inviteId: string): Promise<void>;
-    listActiveInvites(workspaceId: string): Promise<ActiveInvite[]>;
-    acceptInvite(
-        tokenHash: string,
-        userId: string,
-    ): Promise<{ workspace: Workspace; joined: boolean } | undefined>;
-    revokeInvite(workspaceId: string, inviteId: string): Promise<boolean>;
-
-    // Canali
-    getChannel(id: string): Promise<Channel | undefined>;
-    getChannelsVisibleToUser(workspaceId: string, userId: string): Promise<Channel[]>;
-    createChannel(channel: InsertChannel): Promise<Channel>;
-
-    // Membri dei canali
-    addChannelMember(member: InsertChannelMember): Promise<void>;
-    isChannelMember(channelId: string, userId: string): Promise<boolean>;
-    getChannelMemberIds(channelId: string): Promise<string[]>;
-    getChannelMembers(channelId: string): Promise<PublicUser[]>;
-
-    // Messaggi
-    getMessages(channelId: string, page?: PageOptions): Promise<MessageWithSender[]>;
-    getMessageCursor(channelId: string, messageId: string): Promise<string | undefined>;
-    createMessage(message: InsertMessage): Promise<Message>;
-
-    // Messaggi diretti
-    getDirectMessages(
-        userId1: string,
-        userId2: string,
-        page?: PageOptions,
-    ): Promise<DirectMessageWithUsers[]>;
-    getDirectMessageCursor(
-        userId1: string,
-        userId2: string,
-        messageId: string,
-    ): Promise<string | undefined>;
-    createDirectMessage(message: InsertDirectMessage): Promise<DirectMessage>;
-
-    // Presenza
-    updatePresence(userId: string, status: string): Promise<void>;
-    resetPresence(): Promise<void>;
-}
-
 function conversation(userId1: string, userId2: string) {
     return or(
         and(eq(directMessages.senderId, userId1), eq(directMessages.receiverId, userId2)),
@@ -172,7 +90,7 @@ function conversation(userId1: string, userId2: string) {
     );
 }
 
-export class DatabaseStorage implements IStorage {
+export class DatabaseStorage {
     // Utenti
     async getUser(id: string): Promise<PublicUser | undefined> {
         const [user] = await db.select(publicUserColumns).from(users).where(eq(users.id, id));
@@ -226,9 +144,26 @@ export class DatabaseStorage implements IStorage {
         return memberWorkspaces.map((m) => m.workspace);
     }
 
-    async createWorkspace(insertWorkspace: InsertWorkspace): Promise<Workspace> {
-        const [workspace] = await db.insert(workspaces).values(insertWorkspace).returning();
-        return workspace;
+    /** Workspace, proprietario e canale #general nascono insieme o non nascono affatto. */
+    async createWorkspaceWithGeneral(name: string, ownerId: string): Promise<Workspace> {
+        return db.transaction(async (tx) => {
+            const [workspace] = await tx.insert(workspaces).values({ name, ownerId }).returning();
+            await tx
+                .insert(workspaceMembers)
+                .values({ workspaceId: workspace.id, userId: ownerId, role: "owner" });
+            const [general] = await tx
+                .insert(channels)
+                .values({
+                    workspaceId: workspace.id,
+                    name: "general",
+                    description: "Il canale di tutto il team",
+                    isPrivate: false,
+                    createdById: ownerId,
+                })
+                .returning({ id: channels.id });
+            await tx.insert(channelMembers).values({ channelId: general.id, userId: ownerId });
+            return workspace;
+        });
     }
 
     // Membri dei workspace
@@ -266,33 +201,6 @@ export class DatabaseStorage implements IStorage {
         return !!row;
     }
 
-    /**
-     * Aggiunge l'utente al workspace e al canale #general, in una transazione.
-     * Restituisce false se era già membro.
-     */
-    async joinWorkspace(workspaceId: string, userId: string): Promise<boolean> {
-        return db.transaction(async (tx) => {
-            const inserted = await tx
-                .insert(workspaceMembers)
-                .values({ workspaceId, userId, role: "member" })
-                .onConflictDoNothing()
-                .returning({ id: workspaceMembers.id });
-            if (inserted.length === 0) return false;
-
-            const [general] = await tx
-                .select({ id: channels.id })
-                .from(channels)
-                .where(and(eq(channels.workspaceId, workspaceId), eq(channels.name, "general")));
-            if (general) {
-                await tx
-                    .insert(channelMembers)
-                    .values({ channelId: general.id, userId })
-                    .onConflictDoNothing();
-            }
-            return true;
-        });
-    }
-
     // Inviti
     async createInvite(invite: {
         workspaceId: string;
@@ -318,13 +226,6 @@ export class DatabaseStorage implements IStorage {
                 ),
             );
         return row;
-    }
-
-    async countInviteUse(inviteId: string): Promise<void> {
-        await db
-            .update(workspaceInvites)
-            .set({ uses: sql`${workspaceInvites.uses} + 1` })
-            .where(eq(workspaceInvites.id, inviteId));
     }
 
     /** Inviti non revocati e non scaduti, senza hash: per l'elenco nel dialog. */
@@ -425,11 +326,6 @@ export class DatabaseStorage implements IStorage {
         return rows.map((r) => r.userId);
     }
 
-    async addWorkspaceMember(member: InsertWorkspaceMember): Promise<WorkspaceMember> {
-        const [workspaceMember] = await db.insert(workspaceMembers).values(member).returning();
-        return workspaceMember;
-    }
-
     async isWorkspaceMember(workspaceId: string, userId: string): Promise<boolean> {
         const [member] = await db
             .select({ id: workspaceMembers.id })
@@ -468,9 +364,14 @@ export class DatabaseStorage implements IStorage {
             .orderBy(asc(channels.createdAt));
     }
 
-    async createChannel(insertChannel: InsertChannel): Promise<Channel> {
-        const [channel] = await db.insert(channels).values(insertChannel).returning();
-        return channel;
+    async createChannelWithCreator(channel: InsertChannel): Promise<Channel> {
+        return db.transaction(async (tx) => {
+            const [created] = await tx.insert(channels).values(channel).returning();
+            await tx
+                .insert(channelMembers)
+                .values({ channelId: created.id, userId: channel.createdById });
+            return created;
+        });
     }
 
     // Membri dei canali

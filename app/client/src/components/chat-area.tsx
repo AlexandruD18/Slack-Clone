@@ -26,33 +26,47 @@ export function ChatArea({ channel }: ChatAreaProps) {
     const { user } = useAuth();
     const { sendMessage: sendSocketMessage, subscribe } = useSocket();
 
-    const { messages, isLoading, hasOlder, isLoadingOlder, loadOlderFailed, loadOlder } =
-        useMessageHistory<MessageWithSender>(
-            ["/api/channels", channel.id, "messages"],
-            `/api/channels/${channel.id}/messages`,
-            scrollContainerRef,
-        );
+    const {
+        messages,
+        isLoading,
+        hasOlder,
+        isLoadingOlder,
+        loadOlderFailed,
+        loadOlder,
+        appendMessage,
+    } = useMessageHistory<MessageWithSender>(
+        ["/api/channels", channel.id, "messages"],
+        `/api/channels/${channel.id}/messages`,
+        scrollContainerRef,
+    );
 
     const sendMutation = useMutation({
         mutationFn: async (content: string) => {
-            const response = await apiRequest("POST", `/api/channels/${channel.id}/messages`, {
-                content,
-            });
+            const response = await apiRequest<MessageWithSender>(
+                "POST",
+                `/api/channels/${channel.id}/messages`,
+                {
+                    content,
+                },
+            );
             return response;
         },
-        onSuccess: () => {
+        onSuccess: (sent: MessageWithSender) => {
             setMessage("");
-            queryClient.invalidateQueries({ queryKey: ["/api/channels", channel.id, "messages"] });
+            appendMessage(sent);
         },
     });
 
     useEffect(() => {
         const unsubscribeMessage = subscribe("message:new", (payload) => {
             if (payload.channelId === channel.id) {
-                queryClient.invalidateQueries({
-                    queryKey: ["/api/channels", channel.id, "messages"],
-                });
+                appendMessage(payload);
+                setTypingUsers((prev) => prev.filter((name) => name !== payload.sender?.name));
             }
+        });
+        // Dopo una riconnessione ricarico: nel frattempo possono essere arrivati messaggi.
+        const unsubscribeReady = subscribe("socket:ready", () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/channels", channel.id, "messages"] });
         });
 
         const unsubscribeTypingStart = subscribe("typing:start", (payload) => {
@@ -69,10 +83,11 @@ export function ChatArea({ channel }: ChatAreaProps) {
 
         return () => {
             unsubscribeMessage();
+            unsubscribeReady();
             unsubscribeTypingStart();
             unsubscribeTypingStop();
         };
-    }, [channel.id, subscribe, user?.id]);
+    }, [channel.id, subscribe, user?.id, appendMessage]);
 
     const handleTyping = () => {
         if (!isTyping) {
@@ -285,12 +300,14 @@ export function ChatArea({ channel }: ChatAreaProps) {
                         className="min-h-[44px] max-h-32 resize-none"
                         rows={1}
                         data-testid="input-message"
+                        aria-label={`Messaggio in #${channel.name}`}
                     />
                     <Button
                         type="submit"
                         size="icon"
                         disabled={!message.trim() || sendMutation.isPending}
                         data-testid="button-send"
+                        aria-label="Invia messaggio"
                     >
                         {sendMutation.isPending ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
