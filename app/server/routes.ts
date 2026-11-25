@@ -1,122 +1,32 @@
-import type { Express, Request, Response, NextFunction } from "express";
-import type { Server } from "http";
-import { WebSocketServer, WebSocket } from "ws";
-import { storage, toSelfUser, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "./storage";
-import { config } from "./config";
-import { hash, hashSync, compare } from "bcrypt";
-import { createHash, randomBytes, randomUUID } from "crypto";
-import jwt from "jsonwebtoken";
+import type { Express, Response } from "express";
+import { compare, hash } from "bcrypt";
+import { createHash, randomBytes } from "crypto";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
-import { loginSchema, registerSchema, type Channel } from "@shared/schema";
+import {
+    channelSchema,
+    loginSchema,
+    messageSchema,
+    profileSchema,
+    registerSchema,
+    workspaceSchema,
+} from "@shared/validation";
+import {
+    authenticateToken,
+    BCRYPT_COST,
+    currentUserId,
+    DUMMY_HASH,
+    signToken,
+    type AuthenticatedRequest,
+} from "./auth";
+import { canManageWorkspace, getAccessibleChannel } from "./access";
+import { HttpError, isUniqueViolation, parseOrThrow, route } from "./http-utils";
+import { broadcastToChannel, broadcastToWorkspace, sendToUser } from "./realtime";
+import { config } from "./config";
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, storage, toSelfUser } from "./storage";
 
-const JWT_SECRET = config.JWT_SECRET;
-const JWT_OPTIONS: jwt.VerifyOptions = { algorithms: ["HS256"] };
-const BCRYPT_COST = 10;
-// Hash di una stringa casuale con lo stesso costo: i tempi del login non cambiano.
-const DUMMY_HASH = hashSync(randomUUID(), BCRYPT_COST);
-
-function signToken(user: { id: string; email: string; name: string }) {
-    return jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, {
-        algorithm: "HS256",
-        expiresIn: "7d",
-    });
-}
-
-interface AuthenticatedRequest extends Request {
-    user?: { id: string; email: string; name: string };
-}
-
-// JWT middleware
-function authenticateToken(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-    const authHeader = req.headers["authorization"];
-    const token = authHeader && authHeader.split(" ")[1];
-
-    if (!token) {
-        return res.status(401).json({ message: "Authentication required" });
-    }
-
-    try {
-        const decoded = jwt.verify(token, JWT_SECRET, JWT_OPTIONS) as {
-            id: string;
-            email: string;
-            name: string;
-        };
-        req.user = decoded;
-        next();
-    } catch {
-        return res.status(401).json({ message: "Invalid or expired token" });
-    }
-}
-
-// WebSocket connections by user ID
-const wsConnections = new Map<string, Set<WebSocket>>();
-// Track user workspaces for targeted broadcasts
-const userWorkspaces = new Map<string, Set<string>>();
-
-function broadcastToUser(userId: string, type: string, payload: any) {
-    const connections = wsConnections.get(userId);
-    if (connections) {
-        const message = JSON.stringify({ type, payload });
-        connections.forEach((ws) => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(message);
-            }
-        });
-    }
-}
-
-function sendToUsers(userIds: string[], type: string, payload: unknown, excludeUserId?: string) {
-    const message = JSON.stringify({ type, payload });
-    for (const id of userIds) {
-        if (id === excludeUserId) continue;
-        wsConnections.get(id)?.forEach((ws) => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(message);
-            }
-        });
-    }
-}
-
-async function broadcastToWorkspaceMembers(
-    workspaceId: string,
-    type: string,
-    payload: unknown,
-    excludeUserId?: string,
-) {
-    sendToUsers(await storage.getWorkspaceMemberIds(workspaceId), type, payload, excludeUserId);
-}
-
-/** Un canale privato arriva solo ai suoi membri, uno pubblico a tutto il workspace. */
-async function broadcastToChannel(
-    channel: Channel,
-    type: string,
-    payload: unknown,
-    excludeUserId?: string,
-) {
-    const recipients = channel.isPrivate
-        ? await storage.getChannelMemberIds(channel.id)
-        : await storage.getWorkspaceMemberIds(channel.workspaceId);
-    sendToUsers(recipients, type, payload, excludeUserId);
-}
-
-/**
- * Restituisce il canale solo se l'utente può vederlo: membro del workspace e,
- * per i canali privati, anche membro del canale. Altrimenti undefined, così
- * le route rispondono 404 senza rivelare che il canale esiste.
- */
-async function getAccessibleChannel(channelId: unknown, userId: string) {
-    if (typeof channelId !== "string") return undefined;
-    const channel = await storage.getChannel(channelId);
-    if (!channel) return undefined;
-    if (!(await storage.isWorkspaceMember(channel.workspaceId, userId))) return undefined;
-    if (channel.isPrivate && !(await storage.isChannelMember(channel.id, userId))) return undefined;
-    return channel;
-}
-
-/** Errore Postgres 23505: violazione di un vincolo di unicità. */
-function isUniqueViolation(error: unknown): boolean {
-    return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
-}
+type AuthedRoute = (req: AuthenticatedRequest, res: Response) => Promise<unknown>;
+const authed = (handler: AuthedRoute) => route<AuthenticatedRequest>(handler);
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -124,720 +34,375 @@ function hashInviteToken(token: string) {
     return createHash("sha256").update(token).digest("hex");
 }
 
-function canManageWorkspace(role: string) {
-    return role === "owner" || role === "admin";
-}
-
 /** Parametri di paginazione: `?limit=50&before=<id messaggio>`. */
 const pageQuerySchema = z.object({
     limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
-    before: z.string().uuid().optional(),
+    before: z.uuid().optional(),
 });
 
-export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
-    // WebSocket server
-    const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+const idParam = z.uuid("Identificativo non valido");
 
-    wss.on("connection", async (ws, req) => {
-        const url = new URL(req.url || "", `http://${req.headers.host}`);
-        const token = url.searchParams.get("token");
+const limiterOptions = {
+    standardHeaders: "draft-8" as const,
+    legacyHeaders: false,
+    message: { message: "Troppe richieste: riprova tra qualche minuto" },
+    skip: () => config.DISABLE_RATE_LIMITS && config.NODE_ENV !== "production",
+};
 
-        if (!token) {
-            ws.close(1008, "No token provided");
-            return;
-        }
+/**
+ * Login: 10 tentativi falliti ogni 15 minuti per coppia IP + email.
+ * Così chi indovina password su un account si ferma, ma un'aula dietro lo stesso
+ * IP non resta bloccata per gli errori di una sola persona.
+ */
+const loginLimiter = rateLimit({
+    ...limiterOptions,
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    skipSuccessfulRequests: true,
+    keyGenerator: (req) => {
+        const email =
+            typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+        return `${ipKeyGenerator(req.ip ?? "")}:${email}`;
+    },
+});
 
-        let userId: string;
-        try {
-            const decoded = jwt.verify(token, JWT_SECRET, JWT_OPTIONS) as { id: string };
-            userId = decoded.id;
-        } catch {
-            ws.close(1008, "Invalid token");
-            return;
-        }
+/** Registrazioni e uso degli inviti: limiti larghi per un uso normale, stretti per i bot. */
+const signupLimiter = rateLimit({ ...limiterOptions, windowMs: 60 * 60 * 1000, limit: 30 });
+const inviteLimiter = rateLimit({ ...limiterOptions, windowMs: 15 * 60 * 1000, limit: 30 });
 
-        // Add connection
-        if (!wsConnections.has(userId)) {
-            wsConnections.set(userId, new Set());
-        }
-        wsConnections.get(userId)!.add(ws);
+/** Tetto generale sulle API autenticate. */
+const apiLimiter = rateLimit({ ...limiterOptions, windowMs: 60 * 1000, limit: 300 });
 
-        // Update presence to online
-        await storage.updatePresence(userId, "online");
-        const user = await storage.getUser(userId);
+async function requireWorkspaceManager(workspaceId: string, userId: string) {
+    const role = await storage.getWorkspaceRole(workspaceId, userId);
+    // 404 anche per chi non è membro: non rivela che il workspace esiste.
+    if (!role) throw new HttpError(404, "Workspace non trovato");
+    if (!canManageWorkspace(role)) {
+        throw new HttpError(403, "Solo proprietari e amministratori possono farlo");
+    }
+}
 
-        // Get user's workspaces and notify members
-        const workspaces = await storage.getWorkspacesByUser(userId);
-        const workspaceIds = new Set(workspaces.map((w) => w.id));
-        userWorkspaces.set(userId, workspaceIds);
+async function requireWorkspaceMember(workspaceId: string, userId: string) {
+    if (!(await storage.isWorkspaceMember(workspaceId, userId))) {
+        throw new HttpError(404, "Workspace non trovato");
+    }
+}
 
-        // Notify workspace members that user is online
-        for (const workspace of workspaces) {
-            await broadcastToWorkspaceMembers(
-                workspace.id,
-                "presence:update",
-                {
-                    userId,
-                    userName: user?.name,
-                    status: "online",
-                },
-                userId,
-            );
-        }
+async function requireChannel(channelId: string, userId: string) {
+    const channel = await getAccessibleChannel(channelId, userId);
+    if (!channel) throw new HttpError(404, "Canale non trovato");
+    return channel;
+}
 
-        ws.on("message", async (data) => {
-            try {
-                const { type, payload } = JSON.parse(data.toString());
+/** I DM sono possibili solo tra persone che condividono un workspace; per gli altri l'utente non esiste. */
+async function requireDmPartner(userId: string, otherId: string) {
+    const other = idParam.safeParse(otherId);
+    if (!other.success || !(await storage.shareWorkspace(userId, other.data))) {
+        throw new HttpError(404, "Utente non trovato");
+    }
+    return other.data;
+}
 
-                switch (type) {
-                    case "typing:start":
-                    case "typing:stop": {
-                        const channel = await getAccessibleChannel(payload?.channelId, userId);
-                        if (channel) {
-                            await broadcastToChannel(
-                                channel,
-                                type,
-                                { channelId: channel.id, userId, userName: user?.name },
-                                userId,
-                            );
-                        }
-                        break;
-                    }
-
-                    case "dm:typing:start":
-                    case "dm:typing:stop": {
-                        const receiverId = payload?.receiverId;
-                        if (
-                            typeof receiverId === "string" &&
-                            (await storage.shareWorkspace(userId, receiverId))
-                        ) {
-                            broadcastToUser(receiverId, type, {
-                                senderId: userId,
-                                receiverId,
-                                senderName: user?.name,
-                            });
-                        }
-                        break;
-                    }
-                }
-            } catch (error) {
-                console.error("WebSocket message error:", error);
-            }
-        });
-
-        ws.on("close", async () => {
-            const connections = wsConnections.get(userId);
-            if (connections) {
-                connections.delete(ws);
-                if (connections.size === 0) {
-                    wsConnections.delete(userId);
-                    // Update presence to offline
-                    await storage.updatePresence(userId, "offline");
-
-                    // Notify workspace members
-                    const userWs = userWorkspaces.get(userId);
-                    if (userWs) {
-                        for (const workspaceId of userWs) {
-                            await broadcastToWorkspaceMembers(
-                                workspaceId,
-                                "presence:update",
-                                {
-                                    userId,
-                                    userName: user?.name,
-                                    status: "offline",
-                                },
-                                userId,
-                            );
-                        }
-                        userWorkspaces.delete(userId);
-                    }
-                }
-            }
-        });
-    });
-
-    // Auth routes
-    app.post("/api/auth/register", async (req, res) => {
-        try {
-            const data = registerSchema.parse(req.body);
-
+export function registerRoutes(app: Express) {
+    // Autenticazione
+    app.post(
+        "/api/auth/register",
+        signupLimiter,
+        route(async (req, res) => {
+            const data = parseOrThrow(registerSchema, req.body);
+            // Dire che l'email esiste aiuta chi si è dimenticato di avere un account;
+            // il limite sulle registrazioni rende costoso usarlo per scoprire le email.
             if (await storage.emailExists(data.email)) {
-                return res.status(400).json({ message: "Email already registered" });
+                throw new HttpError(409, "Esiste già un account con questa email");
             }
-
-            const hashedPassword = await hash(data.password, BCRYPT_COST);
-            const user = await storage.createUser({
-                email: data.email,
-                password: hashedPassword,
-                name: data.name,
-            });
-
-            const token = signToken(user);
-
-            res.json({ token, user });
-        } catch (error) {
-            if (error instanceof z.ZodError) {
-                return res.status(400).json({ message: error.errors[0].message });
-            }
-            console.error("Registration error:", error);
-            res.status(500).json({ message: "Failed to register" });
-        }
-    });
-
-    app.post("/api/auth/login", async (req, res) => {
-        try {
-            const data = loginSchema.parse(req.body);
-
-            const user = await storage.getUserWithPasswordByEmail(data.email);
-            // Confronto anche se l'utente non esiste, così i tempi di risposta
-            // non rivelano quali email sono registrate.
-            const validPassword = await compare(data.password, user?.password ?? DUMMY_HASH);
-            if (!user || !validPassword) {
-                return res.status(401).json({ message: "Invalid email or password" });
-            }
-
-            const token = signToken(user);
-
-            res.json({ token, user: toSelfUser(user) });
-        } catch (error) {
-            if (error instanceof z.ZodError) {
-                return res.status(400).json({ message: error.errors[0].message });
-            }
-            console.error("Login error:", error);
-            res.status(500).json({ message: "Failed to login" });
-        }
-    });
-
-    app.get("/api/auth/me", authenticateToken, async (req: AuthenticatedRequest, res) => {
-        try {
-            const user = await storage.getSelf(req.user!.id);
-            if (!user) {
-                return res.status(404).json({ message: "User not found" });
-            }
-            res.json(user);
-        } catch (error) {
-            console.error("Get user error:", error);
-            res.status(500).json({ message: "Failed to get user" });
-        }
-    });
-
-    // Workspace routes
-    app.get("/api/workspaces", authenticateToken, async (req: AuthenticatedRequest, res) => {
-        try {
-            const workspaces = await storage.getWorkspacesByUser(req.user!.id);
-            res.json(workspaces);
-        } catch (error) {
-            console.error("Get workspaces error:", error);
-            res.status(500).json({ message: "Failed to get workspaces" });
-        }
-    });
-
-    app.post("/api/workspaces", authenticateToken, async (req: AuthenticatedRequest, res) => {
-        try {
-            const { name } = req.body;
-            if (!name || typeof name !== "string" || name.length < 2) {
-                return res
-                    .status(400)
-                    .json({ message: "Workspace name must be at least 2 characters" });
-            }
-
-            const workspace = await storage.createWorkspace({
-                name,
-                ownerId: req.user!.id,
-            });
-
-            // Add creator as member
-            await storage.addWorkspaceMember({
-                workspaceId: workspace.id,
-                userId: req.user!.id,
-                role: "owner",
-            });
-
-            // Create a default general channel
-            const generalChannel = await storage.createChannel({
-                workspaceId: workspace.id,
-                name: "general",
-                description: "This is the general channel for team discussions",
-                isPrivate: false,
-                createdById: req.user!.id,
-            });
-
-            // Add creator as channel member
-            await storage.addChannelMember({
-                channelId: generalChannel.id,
-                userId: req.user!.id,
-            });
-
-            res.status(201).json(workspace);
-        } catch (error) {
-            console.error("Create workspace error:", error);
-            res.status(500).json({ message: "Failed to create workspace" });
-        }
-    });
-
-    app.get("/api/workspaces/:id", authenticateToken, async (req: AuthenticatedRequest, res) => {
-        try {
-            const workspace = await storage.getWorkspace(req.params.id);
-            if (!workspace) {
-                return res.status(404).json({ message: "Workspace not found" });
-            }
-
-            // Check membership
-            const isMember = await storage.isWorkspaceMember(workspace.id, req.user!.id);
-            if (!isMember) {
-                return res.status(403).json({ message: "Not a member of this workspace" });
-            }
-
-            res.json(workspace);
-        } catch (error) {
-            console.error("Get workspace error:", error);
-            res.status(500).json({ message: "Failed to get workspace" });
-        }
-    });
-
-    app.get(
-        "/api/workspaces/:id/members",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
             try {
-                // Check membership
-                const isMember = await storage.isWorkspaceMember(req.params.id, req.user!.id);
-                if (!isMember) {
-                    return res.status(403).json({ message: "Not a member of this workspace" });
-                }
-
-                const members = await storage.getWorkspaceMembers(req.params.id);
-                res.json(members);
+                const user = await storage.createUser({
+                    email: data.email,
+                    password: await hash(data.password, BCRYPT_COST),
+                    name: data.name,
+                });
+                res.status(201).json({ token: signToken(user), user });
             } catch (error) {
-                console.error("Get workspace members error:", error);
-                res.status(500).json({ message: "Failed to get workspace members" });
+                if (isUniqueViolation(error)) {
+                    throw new HttpError(409, "Esiste già un account con questa email");
+                }
+                throw error;
             }
-        },
+        }),
     );
 
-    // Channel routes
+    app.post(
+        "/api/auth/login",
+        loginLimiter,
+        route(async (req, res) => {
+            const data = parseOrThrow(loginSchema, req.body);
+            const user = await storage.getUserWithPasswordByEmail(data.email);
+            // Confronto anche se l'utente non esiste, così i tempi non rivelano chi è registrato.
+            const validPassword = await compare(data.password, user?.password ?? DUMMY_HASH);
+            if (!user || !validPassword) {
+                throw new HttpError(401, "Email o password non corrette");
+            }
+            res.json({ token: signToken(user), user: toSelfUser(user) });
+        }),
+    );
+
+    app.use("/api", authenticateToken, apiLimiter);
+
+    app.get(
+        "/api/auth/me",
+        authed(async (req, res) => {
+            const user = await storage.getSelf(currentUserId(req));
+            if (!user) throw new HttpError(401, "Sessione scaduta: accedi di nuovo");
+            res.json(user);
+        }),
+    );
+
+    app.patch(
+        "/api/users/me",
+        authed(async (req, res) => {
+            const data = parseOrThrow(profileSchema, req.body);
+            const user = await storage.updateUser(currentUserId(req), data);
+            if (!user) throw new HttpError(401, "Sessione scaduta: accedi di nuovo");
+            res.json(user);
+        }),
+    );
+
+    // Workspace
+    app.get(
+        "/api/workspaces",
+        authed(async (req, res) => {
+            res.json(await storage.getWorkspacesByUser(currentUserId(req)));
+        }),
+    );
+
+    app.post(
+        "/api/workspaces",
+        authed(async (req, res) => {
+            const { name } = parseOrThrow(workspaceSchema, req.body);
+            const workspace = await storage.createWorkspaceWithGeneral(name, currentUserId(req));
+            res.status(201).json(workspace);
+        }),
+    );
+
+    app.get(
+        "/api/workspaces/:workspaceId",
+        authed(async (req, res) => {
+            await requireWorkspaceMember(req.params.workspaceId, currentUserId(req));
+            const workspace = await storage.getWorkspace(req.params.workspaceId);
+            if (!workspace) throw new HttpError(404, "Workspace non trovato");
+            res.json(workspace);
+        }),
+    );
+
+    app.get(
+        "/api/workspaces/:workspaceId/members",
+        authed(async (req, res) => {
+            await requireWorkspaceMember(req.params.workspaceId, currentUserId(req));
+            res.json(await storage.getWorkspaceMembers(req.params.workspaceId));
+        }),
+    );
+
+    // Canali
     app.get(
         "/api/workspaces/:workspaceId/channels",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
-            try {
-                // Check workspace membership
-                const isMember = await storage.isWorkspaceMember(
-                    req.params.workspaceId,
-                    req.user!.id,
-                );
-                if (!isMember) {
-                    return res.status(403).json({ message: "Not a member of this workspace" });
-                }
-
-                const channels = await storage.getChannelsVisibleToUser(
-                    req.params.workspaceId,
-                    req.user!.id,
-                );
-                res.json(channels);
-            } catch (error) {
-                console.error("Get channels error:", error);
-                res.status(500).json({ message: "Failed to get channels" });
-            }
-        },
+        authed(async (req, res) => {
+            const userId = currentUserId(req);
+            await requireWorkspaceMember(req.params.workspaceId, userId);
+            res.json(await storage.getChannelsVisibleToUser(req.params.workspaceId, userId));
+        }),
     );
 
     app.post(
         "/api/workspaces/:workspaceId/channels",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
+        authed(async (req, res) => {
+            const userId = currentUserId(req);
+            await requireWorkspaceMember(req.params.workspaceId, userId);
+            const data = parseOrThrow(channelSchema, req.body);
             try {
-                // Check workspace membership
-                const isMember = await storage.isWorkspaceMember(
-                    req.params.workspaceId,
-                    req.user!.id,
-                );
-                if (!isMember) {
-                    return res.status(403).json({ message: "Not a member of this workspace" });
-                }
-
-                const { name, description, isPrivate } = req.body;
-                if (!name || typeof name !== "string" || name.length < 2) {
-                    return res
-                        .status(400)
-                        .json({ message: "Channel name must be at least 2 characters" });
-                }
-
-                const channel = await storage.createChannel({
+                const channel = await storage.createChannelWithCreator({
                     workspaceId: req.params.workspaceId,
-                    name: name.toLowerCase().replace(/\s+/g, "-"),
-                    description: description || null,
-                    isPrivate: isPrivate || false,
-                    createdById: req.user!.id,
+                    name: data.name,
+                    description: data.description,
+                    isPrivate: data.isPrivate,
+                    createdById: userId,
                 });
-
-                // Add creator as member
-                await storage.addChannelMember({
-                    channelId: channel.id,
-                    userId: req.user!.id,
-                });
-
                 res.status(201).json(channel);
             } catch (error) {
                 if (isUniqueViolation(error)) {
-                    return res
-                        .status(409)
-                        .json({ message: "A channel with this name already exists" });
+                    throw new HttpError(409, "Esiste già un canale con questo nome");
                 }
-                console.error("Create channel error:", error);
-                res.status(500).json({ message: "Failed to create channel" });
+                throw error;
             }
-        },
+        }),
     );
 
-    // Message routes
+    app.get(
+        "/api/channels/:channelId/members",
+        authed(async (req, res) => {
+            const channel = await requireChannel(req.params.channelId, currentUserId(req));
+            res.json(await storage.getChannelMembers(channel.id));
+        }),
+    );
+
+    app.post(
+        "/api/channels/:channelId/members",
+        authed(async (req, res) => {
+            const channel = await requireChannel(req.params.channelId, currentUserId(req));
+            const { userId } = parseOrThrow(z.object({ userId: idParam }), req.body);
+            // Si può aggiungere solo chi fa già parte del workspace.
+            if (!(await storage.isWorkspaceMember(channel.workspaceId, userId))) {
+                throw new HttpError(400, "Questa persona non fa parte del workspace");
+            }
+            await storage.addChannelMember({ channelId: channel.id, userId });
+            sendToUser(userId, "channel:added", { workspaceId: channel.workspaceId, channel });
+            res.status(204).end();
+        }),
+    );
+
+    // Messaggi
     app.get(
         "/api/channels/:channelId/messages",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
-            try {
-                const channel = await getAccessibleChannel(req.params.channelId, req.user!.id);
-                if (!channel) {
-                    return res.status(404).json({ message: "Channel not found" });
-                }
-
-                const query = pageQuerySchema.safeParse(req.query);
-                if (!query.success) {
-                    return res.status(400).json({ message: "Invalid pagination parameters" });
-                }
-                const before = query.data.before
-                    ? await storage.getMessageCursor(channel.id, query.data.before)
-                    : undefined;
-                if (query.data.before && !before) {
-                    return res.status(400).json({ message: "Unknown message cursor" });
-                }
-
-                const messages = await storage.getMessages(channel.id, {
-                    before,
-                    limit: query.data.limit,
-                });
-                res.json(messages);
-            } catch (error) {
-                console.error("Get messages error:", error);
-                res.status(500).json({ message: "Failed to get messages" });
-            }
-        },
+        authed(async (req, res) => {
+            const channel = await requireChannel(req.params.channelId, currentUserId(req));
+            const page = parseOrThrow(pageQuerySchema, req.query);
+            const before = page.before
+                ? await storage.getMessageCursor(channel.id, page.before)
+                : undefined;
+            if (page.before && !before) throw new HttpError(400, "Cursore non valido");
+            res.json(await storage.getMessages(channel.id, { before, limit: page.limit }));
+        }),
     );
 
     app.post(
         "/api/channels/:channelId/messages",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
-            try {
-                const channel = await getAccessibleChannel(req.params.channelId, req.user!.id);
-                if (!channel) {
-                    return res.status(404).json({ message: "Channel not found" });
-                }
-
-                const { content } = req.body;
-                if (!content || typeof content !== "string" || content.trim().length === 0) {
-                    return res.status(400).json({ message: "Message content is required" });
-                }
-
-                const message = await storage.createMessage({
-                    channelId: req.params.channelId,
-                    senderId: req.user!.id,
-                    content: content.trim(),
-                });
-
-                const user = await storage.getUser(req.user!.id);
-
-                await broadcastToChannel(
-                    channel,
-                    "message:new",
-                    {
-                        ...message,
-                        channelId: req.params.channelId,
-                        sender: user,
-                    },
-                    req.user!.id,
-                );
-
-                res.status(201).json(message);
-            } catch (error) {
-                console.error("Create message error:", error);
-                res.status(500).json({ message: "Failed to create message" });
-            }
-        },
+        authed(async (req, res) => {
+            const userId = currentUserId(req);
+            const channel = await requireChannel(req.params.channelId, userId);
+            const { content } = parseOrThrow(messageSchema, req.body);
+            const message = await storage.createMessage({
+                channelId: channel.id,
+                senderId: userId,
+                content,
+            });
+            const sender = await storage.getUser(userId);
+            const payload = { ...message, sender };
+            await broadcastToChannel(channel, "message:new", payload, userId);
+            res.status(201).json(payload);
+        }),
     );
 
-    // Inviti nei workspace
+    // Messaggi diretti
+    app.get(
+        "/api/dm/:userId",
+        authed(async (req, res) => {
+            const userId = currentUserId(req);
+            const otherId = await requireDmPartner(userId, req.params.userId);
+            const page = parseOrThrow(pageQuerySchema, req.query);
+            const before = page.before
+                ? await storage.getDirectMessageCursor(userId, otherId, page.before)
+                : undefined;
+            if (page.before && !before) throw new HttpError(400, "Cursore non valido");
+            res.json(
+                await storage.getDirectMessages(userId, otherId, { before, limit: page.limit }),
+            );
+        }),
+    );
+
     app.post(
-        "/api/workspaces/:workspaceId/invites",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
-            try {
-                const role = await storage.getWorkspaceRole(req.params.workspaceId, req.user!.id);
-                if (!role) {
-                    return res.status(404).json({ message: "Workspace not found" });
-                }
-                if (!canManageWorkspace(role)) {
-                    return res
-                        .status(403)
-                        .json({ message: "Only owners and admins can invite people" });
-                }
-
-                const token = randomBytes(24).toString("base64url");
-                const invite = await storage.createInvite({
-                    workspaceId: req.params.workspaceId,
-                    tokenHash: hashInviteToken(token),
-                    createdById: req.user!.id,
-                    expiresAt: new Date(Date.now() + INVITE_TTL_MS),
-                });
-
-                // Il token in chiaro esce una volta sola, in questa risposta.
-                res.status(201).json({
-                    id: invite.id,
-                    token,
-                    path: `/invito/${token}`,
-                    expiresAt: invite.expiresAt,
-                });
-            } catch (error) {
-                console.error("Create invite error:", error);
-                res.status(500).json({ message: "Failed to create invite" });
-            }
-        },
+        "/api/dm/:userId",
+        authed(async (req, res) => {
+            const userId = currentUserId(req);
+            const otherId = await requireDmPartner(userId, req.params.userId);
+            const { content } = parseOrThrow(messageSchema, req.body);
+            const message = await storage.createDirectMessage({
+                senderId: userId,
+                receiverId: otherId,
+                content,
+            });
+            const [sender, receiver] = await Promise.all([
+                storage.getUser(userId),
+                storage.getUser(otherId),
+            ]);
+            const payload = { ...message, sender, receiver };
+            sendToUser(otherId, "dm:new", payload);
+            res.status(201).json(payload);
+        }),
     );
 
+    // Inviti
     app.get(
         "/api/workspaces/:workspaceId/invites",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
-            try {
-                const role = await storage.getWorkspaceRole(req.params.workspaceId, req.user!.id);
-                if (!role || !canManageWorkspace(role)) {
-                    return res.status(404).json({ message: "Workspace not found" });
-                }
-                res.json(await storage.listActiveInvites(req.params.workspaceId));
-            } catch (error) {
-                console.error("List invites error:", error);
-                res.status(500).json({ message: "Failed to list invites" });
-            }
-        },
+        authed(async (req, res) => {
+            await requireWorkspaceManager(req.params.workspaceId, currentUserId(req));
+            res.json(await storage.listActiveInvites(req.params.workspaceId));
+        }),
+    );
+
+    app.post(
+        "/api/workspaces/:workspaceId/invites",
+        authed(async (req, res) => {
+            const userId = currentUserId(req);
+            await requireWorkspaceManager(req.params.workspaceId, userId);
+            const token = randomBytes(24).toString("base64url");
+            const invite = await storage.createInvite({
+                workspaceId: req.params.workspaceId,
+                tokenHash: hashInviteToken(token),
+                createdById: userId,
+                expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+            });
+            // Il token in chiaro esce una volta sola, in questa risposta.
+            res.status(201).json({
+                id: invite.id,
+                token,
+                path: `/invito/${token}`,
+                expiresAt: invite.expiresAt,
+            });
+        }),
     );
 
     app.delete(
         "/api/workspaces/:workspaceId/invites/:inviteId",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
-            try {
-                const role = await storage.getWorkspaceRole(req.params.workspaceId, req.user!.id);
-                if (!role || !canManageWorkspace(role)) {
-                    return res.status(404).json({ message: "Invite not found" });
-                }
-                const revoked = await storage.revokeInvite(
-                    req.params.workspaceId,
-                    req.params.inviteId,
-                );
-                if (!revoked) {
-                    return res.status(404).json({ message: "Invite not found" });
-                }
-                res.status(204).end();
-            } catch (error) {
-                console.error("Revoke invite error:", error);
-                res.status(500).json({ message: "Failed to revoke invite" });
-            }
-        },
+        authed(async (req, res) => {
+            await requireWorkspaceManager(req.params.workspaceId, currentUserId(req));
+            const revoked = await storage.revokeInvite(req.params.workspaceId, req.params.inviteId);
+            if (!revoked) throw new HttpError(404, "Invito non trovato");
+            res.status(204).end();
+        }),
     );
 
-    app.get("/api/invites/:token", authenticateToken, async (req: AuthenticatedRequest, res) => {
-        try {
+    app.get(
+        "/api/invites/:token",
+        inviteLimiter,
+        authed(async (req, res) => {
             const found = await storage.getValidInvite(hashInviteToken(req.params.token));
-            if (!found) {
-                return res.status(404).json({ message: "This invite is invalid or has expired" });
-            }
-            const alreadyMember = await storage.isWorkspaceMember(found.workspace.id, req.user!.id);
+            if (!found) throw new HttpError(404, "Invito non valido o scaduto");
             res.json({
                 workspace: { id: found.workspace.id, name: found.workspace.name },
-                alreadyMember,
+                alreadyMember: await storage.isWorkspaceMember(
+                    found.workspace.id,
+                    currentUserId(req),
+                ),
             });
-        } catch (error) {
-            console.error("Get invite error:", error);
-            res.status(500).json({ message: "Failed to read invite" });
-        }
-    });
+        }),
+    );
 
     app.post(
         "/api/invites/:token/accept",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
-            try {
-                const found = await storage.acceptInvite(
-                    hashInviteToken(req.params.token),
-                    req.user!.id,
-                );
-                if (!found) {
-                    return res
-                        .status(404)
-                        .json({ message: "This invite is invalid or has expired" });
-                }
-                if (!found.joined) {
-                    return res.json(found.workspace);
-                }
-
-                const user = await storage.getUser(req.user!.id);
-                await broadcastToWorkspaceMembers(
+        inviteLimiter,
+        authed(async (req, res) => {
+            const userId = currentUserId(req);
+            const found = await storage.acceptInvite(hashInviteToken(req.params.token), userId);
+            if (!found) throw new HttpError(404, "Invito non valido o scaduto");
+            if (found.joined) {
+                const user = await storage.getUser(userId);
+                await broadcastToWorkspace(
                     found.workspace.id,
                     "member:joined",
                     { workspaceId: found.workspace.id, user },
-                    req.user!.id,
+                    userId,
                 );
-                res.json(found.workspace);
-            } catch (error) {
-                console.error("Accept invite error:", error);
-                res.status(500).json({ message: "Failed to accept invite" });
             }
-        },
+            res.json(found.workspace);
+        }),
     );
-
-    // Membri dei canali (servono soprattutto per i canali privati)
-    app.get(
-        "/api/channels/:channelId/members",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
-            try {
-                const channel = await getAccessibleChannel(req.params.channelId, req.user!.id);
-                if (!channel) {
-                    return res.status(404).json({ message: "Channel not found" });
-                }
-                res.json(await storage.getChannelMembers(channel.id));
-            } catch (error) {
-                console.error("Get channel members error:", error);
-                res.status(500).json({ message: "Failed to get channel members" });
-            }
-        },
-    );
-
-    app.post(
-        "/api/channels/:channelId/members",
-        authenticateToken,
-        async (req: AuthenticatedRequest, res) => {
-            try {
-                const channel = await getAccessibleChannel(req.params.channelId, req.user!.id);
-                if (!channel) {
-                    return res.status(404).json({ message: "Channel not found" });
-                }
-                const body = z.object({ userId: z.string().uuid() }).safeParse(req.body);
-                if (!body.success) {
-                    return res.status(400).json({ message: "A valid userId is required" });
-                }
-                // Si può aggiungere solo chi fa già parte del workspace.
-                if (!(await storage.isWorkspaceMember(channel.workspaceId, body.data.userId))) {
-                    return res
-                        .status(400)
-                        .json({ message: "This person is not a member of the workspace" });
-                }
-
-                await storage.addChannelMember({ channelId: channel.id, userId: body.data.userId });
-                broadcastToUser(body.data.userId, "channel:added", {
-                    workspaceId: channel.workspaceId,
-                    channel,
-                });
-                res.status(204).end();
-            } catch (error) {
-                console.error("Add channel member error:", error);
-                res.status(500).json({ message: "Failed to add channel member" });
-            }
-        },
-    );
-
-    // Direct message routes
-    app.get("/api/dm/:userId", authenticateToken, async (req: AuthenticatedRequest, res) => {
-        try {
-            // Solo tra persone che condividono un workspace: per gli altri l'utente non esiste.
-            if (!(await storage.shareWorkspace(req.user!.id, req.params.userId))) {
-                return res.status(404).json({ message: "User not found" });
-            }
-
-            const query = pageQuerySchema.safeParse(req.query);
-            if (!query.success) {
-                return res.status(400).json({ message: "Invalid pagination parameters" });
-            }
-            const before = query.data.before
-                ? await storage.getDirectMessageCursor(
-                      req.user!.id,
-                      req.params.userId,
-                      query.data.before,
-                  )
-                : undefined;
-            if (query.data.before && !before) {
-                return res.status(400).json({ message: "Unknown message cursor" });
-            }
-
-            const messages = await storage.getDirectMessages(req.user!.id, req.params.userId, {
-                before,
-                limit: query.data.limit,
-            });
-            res.json(messages);
-        } catch (error) {
-            console.error("Get DMs error:", error);
-            res.status(500).json({ message: "Failed to get direct messages" });
-        }
-    });
-
-    app.post("/api/dm/:userId", authenticateToken, async (req: AuthenticatedRequest, res) => {
-        try {
-            if (!(await storage.shareWorkspace(req.user!.id, req.params.userId))) {
-                return res.status(404).json({ message: "User not found" });
-            }
-            const receiver = await storage.getUser(req.params.userId);
-            if (!receiver) {
-                return res.status(404).json({ message: "User not found" });
-            }
-
-            const { content } = req.body;
-            if (!content || typeof content !== "string" || content.trim().length === 0) {
-                return res.status(400).json({ message: "Message content is required" });
-            }
-
-            const message = await storage.createDirectMessage({
-                senderId: req.user!.id,
-                receiverId: req.params.userId,
-                content: content.trim(),
-            });
-
-            const sender = await storage.getUser(req.user!.id);
-
-            // Notify receiver only
-            broadcastToUser(req.params.userId, "dm:new", {
-                ...message,
-                sender,
-                receiver,
-            });
-
-            res.status(201).json(message);
-        } catch (error) {
-            console.error("Create DM error:", error);
-            res.status(500).json({ message: "Failed to send direct message" });
-        }
-    });
-
-    // User profile routes
-    app.patch("/api/users/me", authenticateToken, async (req: AuthenticatedRequest, res) => {
-        try {
-            const { name, avatar, statusMessage } = req.body;
-
-            const updateData: Parameters<typeof storage.updateUser>[1] = {};
-            if (name) updateData.name = name;
-            if (avatar !== undefined) updateData.avatar = avatar;
-            if (statusMessage !== undefined) updateData.statusMessage = statusMessage;
-
-            const user = await storage.updateUser(req.user!.id, updateData);
-            if (!user) {
-                return res.status(404).json({ message: "User not found" });
-            }
-
-            res.json(user);
-        } catch (error) {
-            console.error("Update user error:", error);
-            res.status(500).json({ message: "Failed to update profile" });
-        }
-    });
-
-    return httpServer;
 }

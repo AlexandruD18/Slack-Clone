@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 
 /** Deve coincidere con DEFAULT_PAGE_SIZE del server. */
 const PAGE_SIZE = 50;
@@ -80,7 +80,27 @@ export function useMessageHistory<T extends HistoryMessage>(
         lastNewestId.current = newestId;
     }, [messages, newestId, scrollContainerRef]);
 
+    /**
+     * Aggiunge un messaggio arrivato in tempo reale (o appena inviato) alla pagina più recente,
+     * senza ricaricare le pagine già aperte. Se c'è già, non fa nulla.
+     */
+    const appendMessage = useCallback(
+        (message: T) => {
+            queryClient.setQueryData<InfiniteData<T[], string | undefined>>(queryKey, (data) => {
+                if (!data || data.pages.some((page) => page.some((m) => m.id === message.id))) {
+                    return data;
+                }
+                const [newest = [], ...older] = data.pages;
+                return { ...data, pages: [[...newest, message], ...older] };
+            });
+        },
+        // queryKey è un array nuovo a ogni render: conta il suo contenuto.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [JSON.stringify(queryKey)],
+    );
+
     return {
+        appendMessage,
         messages,
         isLoading: query.isLoading,
         isError: query.isError,

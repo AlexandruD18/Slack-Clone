@@ -52,7 +52,7 @@ export function WorkspaceSelector({ workspaces }: WorkspaceSelectorProps) {
 
     const createMutation = useMutation({
         mutationFn: async (data: CreateWorkspaceInput) => {
-            const response = await apiRequest("POST", "/api/workspaces", data);
+            const response = await apiRequest<Workspace>("POST", "/api/workspaces", data);
             return response;
         },
         onSuccess: (workspace: Workspace) => {

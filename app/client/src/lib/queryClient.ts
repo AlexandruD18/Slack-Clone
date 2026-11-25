@@ -28,7 +28,7 @@ async function throwIfResNotOk(res: Response) {
     }
 }
 
-export async function apiRequest<T = any>(
+export async function apiRequest<T = unknown>(
     method: string,
     url: string,
     data?: unknown | undefined,

@@ -4,8 +4,14 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 import { MessageSquare, ArrowRight, Loader2 } from "lucide-react";
-import { loginSchema, registerSchema, type LoginInput, type RegisterInput } from "@shared/schema";
+import {
+    loginSchema,
+    registerSchema,
+    type LoginInput,
+    type RegisterInput,
+} from "@shared/validation";
 import { apiRequest } from "@/lib/queryClient";
+import type { SelfUser } from "@shared/schema";
 import { useAuth } from "@/lib/auth";
 import { safeNextPath } from "@/lib/redirect";
 import { Button } from "@/components/ui/button";
@@ -20,6 +26,8 @@ import {
     FormMessage,
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
+
+type AuthResponse = { token: string; user: SelfUser };
 
 export default function AuthPage() {
     const [isLogin, setIsLogin] = useState(true);
@@ -49,7 +57,7 @@ export default function AuthPage() {
 
     const loginMutation = useMutation({
         mutationFn: async (data: LoginInput) => {
-            const response = await apiRequest("POST", "/api/auth/login", data);
+            const response = await apiRequest<AuthResponse>("POST", "/api/auth/login", data);
             return response;
         },
         onSuccess: (data) => {
@@ -67,7 +75,7 @@ export default function AuthPage() {
 
     const registerMutation = useMutation({
         mutationFn: async (data: RegisterInput) => {
-            const response = await apiRequest("POST", "/api/auth/register", data);
+            const response = await apiRequest<AuthResponse>("POST", "/api/auth/register", data);
             return response;
         },
         onSuccess: (data) => {
@@ -126,6 +134,7 @@ export default function AuthPage() {
                                                 <FormControl>
                                                     <Input
                                                         type="email"
+                                                        autoComplete="email"
                                                         placeholder="you@example.com"
                                                         data-testid="input-email"
                                                         value={field.value}
@@ -147,6 +156,7 @@ export default function AuthPage() {
                                                 <FormControl>
                                                     <Input
                                                         type="password"
+                                                        autoComplete="current-password"
                                                         placeholder="Enter your password"
                                                         data-testid="input-password"
                                                         value={field.value}
@@ -193,6 +203,7 @@ export default function AuthPage() {
                                                         type="text"
                                                         placeholder="Your full name"
                                                         data-testid="input-name"
+                                                        autoComplete="name"
                                                         value={field.value}
                                                         onChange={field.onChange}
                                                         onBlur={field.onBlur}
@@ -212,6 +223,7 @@ export default function AuthPage() {
                                                 <FormControl>
                                                     <Input
                                                         type="email"
+                                                        autoComplete="email"
                                                         placeholder="you@example.com"
                                                         data-testid="input-register-email"
                                                         value={field.value}
@@ -233,6 +245,7 @@ export default function AuthPage() {
                                                 <FormControl>
                                                     <Input
                                                         type="password"
+                                                        autoComplete="new-password"
                                                         placeholder="Create a password"
                                                         data-testid="input-register-password"
                                                         value={field.value}

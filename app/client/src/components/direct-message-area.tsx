@@ -26,21 +26,32 @@ export function DirectMessageArea({ user: otherUser }: DirectMessageAreaProps) {
     const { user } = useAuth();
     const { sendMessage: sendSocketMessage, subscribe } = useSocket();
 
-    const { messages, isLoading, hasOlder, isLoadingOlder, loadOlderFailed, loadOlder } =
-        useMessageHistory<DirectMessageWithUsers>(
-            ["/api/dm", otherUser.id],
-            `/api/dm/${otherUser.id}`,
-            scrollContainerRef,
-        );
+    const {
+        messages,
+        isLoading,
+        hasOlder,
+        isLoadingOlder,
+        loadOlderFailed,
+        loadOlder,
+        appendMessage,
+    } = useMessageHistory<DirectMessageWithUsers>(
+        ["/api/dm", otherUser.id],
+        `/api/dm/${otherUser.id}`,
+        scrollContainerRef,
+    );
 
     const sendMutation = useMutation({
         mutationFn: async (content: string) => {
-            const response = await apiRequest("POST", `/api/dm/${otherUser.id}`, { content });
+            const response = await apiRequest<DirectMessageWithUsers>(
+                "POST",
+                `/api/dm/${otherUser.id}`,
+                { content },
+            );
             return response;
         },
-        onSuccess: () => {
+        onSuccess: (sent: DirectMessageWithUsers) => {
             setMessage("");
-            queryClient.invalidateQueries({ queryKey: ["/api/dm", otherUser.id] });
+            appendMessage(sent);
         },
     });
 
@@ -50,8 +61,13 @@ export function DirectMessageArea({ user: otherUser }: DirectMessageAreaProps) {
                 (payload.senderId === otherUser.id && payload.receiverId === user?.id) ||
                 (payload.senderId === user?.id && payload.receiverId === otherUser.id)
             ) {
-                queryClient.invalidateQueries({ queryKey: ["/api/dm", otherUser.id] });
+                appendMessage(payload);
+                setTypingUser(null);
             }
+        });
+        // Dopo una riconnessione ricarico: nel frattempo possono essere arrivati messaggi.
+        const unsubscribeReady = subscribe("socket:ready", () => {
+            queryClient.invalidateQueries({ queryKey: ["/api/dm", otherUser.id] });
         });
 
         const unsubscribeTypingStart = subscribe("dm:typing:start", (payload) => {
@@ -68,10 +84,11 @@ export function DirectMessageArea({ user: otherUser }: DirectMessageAreaProps) {
 
         return () => {
             unsubscribeDM();
+            unsubscribeReady();
             unsubscribeTypingStart();
             unsubscribeTypingStop();
         };
-    }, [otherUser.id, otherUser.name, subscribe, user?.id]);
+    }, [otherUser.id, otherUser.name, subscribe, user?.id, appendMessage]);
 
     const handleTyping = () => {
         if (!isTyping) {
@@ -274,6 +291,7 @@ export function DirectMessageArea({ user: otherUser }: DirectMessageAreaProps) {
                         }}
                         onKeyDown={handleKeyDown}
                         placeholder={`Message ${otherUser.name}`}
+                        aria-label={`Messaggio a ${otherUser.name}`}
                         className="min-h-[44px] max-h-32 resize-none"
                         rows={1}
                         data-testid="input-dm"
@@ -283,6 +301,7 @@ export function DirectMessageArea({ user: otherUser }: DirectMessageAreaProps) {
                         size="icon"
                         disabled={!message.trim() || sendMutation.isPending}
                         data-testid="button-send-dm"
+                        aria-label="Invia messaggio"
                     >
                         {sendMutation.isPending ? (
                             <Loader2 className="w-4 h-4 animate-spin" />

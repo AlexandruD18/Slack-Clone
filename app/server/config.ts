@@ -4,6 +4,13 @@ import { z } from "zod";
 const envSchema = z.object({
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
     PORT: z.coerce.number().int().positive().default(5000),
+    // Numero di proxy davanti al server (0 se esposto direttamente).
+    // Solo per i test automatici: in produzione viene ignorato.
+    DISABLE_RATE_LIMITS: z
+        .enum(["true", "false"])
+        .default("false")
+        .transform((value) => value === "true"),
+    TRUST_PROXY: z.coerce.number().int().min(0).default(0),
     DATABASE_URL: z.string().min(1, "DATABASE_URL è obbligatoria"),
     JWT_SECRET: z
         .string()
